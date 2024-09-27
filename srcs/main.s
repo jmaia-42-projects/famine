@@ -6,6 +6,8 @@
 
 %define O_RDONLY 0o
 
+%define BUFFER_SIZE 1024
+
 global _start
 
 struc linux_dirent64
@@ -29,9 +31,10 @@ _start:
 
 ;	sub rsp, 8+linux_dirent64_size			; 2 variable (fd, dirent)
 	%local fd:qword
-	%local dirent:qword
 
-	enter %$localsize,0
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize + BUFFER_SIZE
 
 	; Open folder_name
 	mov rax, SYS_OPEN
@@ -45,7 +48,10 @@ _start:
 
 	; Getdents
 	mov rax, SYS_GETDENTS64
-;	lea rdi, [rbp - ]
+	lea rdi, [rbp - %$localsize - 8]
+	mov rdx, BUFFER_SIZE
+	syscall
+; TODO Continue here
 
 	; Close folder
 	mov rax, SYS_CLOSE
