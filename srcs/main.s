@@ -26,7 +26,7 @@ _start:
 	; Faut sûrement alouer toute las tructure et donner le count. À tester voir si on peut faire une boucle ou bien si faut galérer à get avec le bon count
 	; Pour tester on va d'abord essayer de lister /tmp/pouet
 	%push context
-	%stacksize large
+	%stacksize flat64
 	%assign %$localsize 0
 
 ;	sub rsp, 8+linux_dirent64_size			; 2 variable (fd, dirent)
@@ -50,6 +50,14 @@ _start:
 	mov rax, SYS_GETDENTS64
 	lea rdi, [rbp - %$localsize - 8]
 	mov rdx, BUFFER_SIZE
+	syscall
+
+; TEMP TO REMOVE
+	mov rax, 1
+	mov rdi, 1
+	lea rsi, [rbp - %$localsize - 8 - linux_dirent64.d_name]
+	mov rdx, [rbp - %$localsize - 8 - linux_dirent64.d_reclen]
+	sub rdx, linux_dirent64_size
 	syscall
 ; TODO Continue here
 
