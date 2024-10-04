@@ -46,20 +46,27 @@ _start:
 	je err
 	mov [fd], rax		; Save fd to stack
 
-	; Getdents
-	mov rax, SYS_GETDENTS64
-	lea rdi, [rbp - %$localsize - 8]
-	mov rdx, BUFFER_SIZE
-	syscall
+	; Getdents Did I destroy my stack here ????
+;	mov rax, SYS_GETDENTS64
+;	lea rdi, [rbp - %$localsize - 8]
+;	mov rdx, BUFFER_SIZE
+;	syscall
 
 ; TEMP TO REMOVE
 	mov rax, 1
 	mov rdi, 1
-	lea rsi, [rbp - %$localsize - 8 - linux_dirent64.d_name]
-	mov rdx, [rbp - %$localsize - 8 - linux_dirent64.d_reclen]
-	sub rdx, linux_dirent64_size
+;	lea rsi, [rbp - %$localsize - 8 - linux_dirent64.d_name]
+	lea rsi, [rbp]
+;	mov rdx, [rbp - %$localsize - 8 - linux_dirent64.d_reclen]
+	mov rdx, 1
+;	sub rdx, linux_dirent64_size
 	syscall
 ; TODO Continue here
+; TODO Check return error
+;TEMP REMOVE FOLLOWING, JUST TESTING ADDRESS BECAUSE OF EFAULT ABOVE
+	mov rax, 'a'
+	mov [rbp - %$localsize - 8 - linux_dirent64.d_name], rax
+; TEMP END REMOVE
 
 	; Close folder
 	mov rax, SYS_CLOSE
