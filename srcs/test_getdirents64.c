@@ -25,7 +25,7 @@ int main()
 	uint8_t *cur_ptr;
 	int ret;
 
-	int fd = open("/tmp/coucou", O_RDONLY);
+	int fd = open("/tmp/pouet", O_RDONLY);
 	if (fd == -1)
 		return 1;
 	while ((ret = syscall(SYS_getdents64, fd, buf, BUF_SIZE)) > 0)
@@ -41,4 +41,14 @@ int main()
 		}
 	}
 	printf("Ret: %d\n", ret);
+
+
+	//TEst addresses */
+	struct linux_dirent64 salut;
+	printf("%p\n", &salut);
+	printf("%p\n", &salut.d_ino);
+	printf("%p\n", &salut.d_off);
+	printf("%p\n", &salut.d_reclen);
+	printf("%p\n", &salut.d_type);
+	printf("%p\n", &salut.d_name);
 }

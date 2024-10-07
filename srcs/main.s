@@ -42,35 +42,30 @@ _start:
 	mov rsi, O_RDONLY
 	xor rdx, rdx
 	syscall
-	cmp rax, -1
-	je err
+	cmp rax, 0
+	jl err
 	mov [fd], rax		; Save fd to stack
 
-	; Getdents Did I destroy my stack here ????
-;	mov rax, SYS_GETDENTS64
-;	lea rdi, [rbp - %$localsize - 8]
-;	mov rdx, BUFFER_SIZE
-;	syscall
+	mov rax, SYS_GETDENTS64
+	mov rdi, [fd]
+	lea rsi, [rbp - %$localsize - BUFFER_SIZE]
+	mov rdx, BUFFER_SIZE
+	syscall
 
 ; TEMP TO REMOVE
 	mov rax, 1
 	mov rdi, 1
 ;	lea rsi, [rbp - %$localsize - 8 - linux_dirent64.d_name]
-	lea rsi, [rbp]
-;	mov rdx, [rbp - %$localsize - 8 - linux_dirent64.d_reclen]
-	mov rdx, 1
-;	sub rdx, linux_dirent64_size
+	lea rsi, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_name]
+	mov dx, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_reclen] ; C'ÉTAIT LA TAILLE DU REGISTRE ! Chelou rec len == sizeof de la structure de ce que je lis sur le programme C :(
+	sub rdx, linux_dirent64_size
 	syscall
 ; TODO Continue here
 ; TODO Check return error
-;TEMP REMOVE FOLLOWING, JUST TESTING ADDRESS BECAUSE OF EFAULT ABOVE
-	mov rax, 'a'
-	mov [rbp - %$localsize - 8 - linux_dirent64.d_name], rax
-; TEMP END REMOVE
 
 	; Close folder
 	mov rax, SYS_CLOSE
-	mov rdi, [rbp - 8]
+	mov rdi, [fd]
 	syscall
 	cmp rax, -1
 	je err
@@ -79,8 +74,10 @@ _start:
 
 err:
 	mov rax, SYS_WRITE
-	mov rdi, err_msg
-	mov rsi, len_err_msg
+	mov rdi, 1
+	mov rsi, err_msg
+	mov rdx, len_err_msg
+	syscall
 	jmp end
 
 end:
