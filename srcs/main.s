@@ -21,16 +21,13 @@ endstruc
 section .text
 
 _start:
-	; Il va falloir utiliser getdents. Cf. le man
-	; IL faut ausi open, evidemment
-	; Faut sûrement alouer toute las tructure et donner le count. À tester voir si on peut faire une boucle ou bien si faut galérer à get avec le bon count
-	; Pour tester on va d'abord essayer de lister /tmp/pouet
 	%push context
 	%stacksize flat64
 	%assign %$localsize 0
 
-;	sub rsp, 8+linux_dirent64_size			; 2 variable (fd, dirent)
 	%local fd:qword
+	%local cur_offset:qword		; Need to be optimized in a register I think
+	%local read_bytes:qword
 
 	push rbp
 	mov rbp, rsp
@@ -52,14 +49,46 @@ _start:
 	mov rdx, BUFFER_SIZE
 	syscall
 
+	mov [read_bytes], rax
+
+	xor rax, rax
+	mov [cur_offset], rax
 ; TEMP TO REMOVE
+
+begin_print_loop:
+	; ft_strlen
+	lea rdi, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_name]
+	add rdi, [cur_offset]
+	xor rdx, rdx
+	.begin:
+		mov sil, [rdi]	; Copy current character to sil (rsi)
+		cmp sil, 0		; If end of string is reached
+		je .end			; Go to the end
+		inc rdx			; Else, increment return value
+		inc rdi			; and go to next character
+		jmp .begin		; Treat next character
+	.end:
+
 	mov rax, 1
 	mov rdi, 1
-;	lea rsi, [rbp - %$localsize - 8 - linux_dirent64.d_name]
 	lea rsi, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_name]
-	mov dx, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_reclen] ; C'ÉTAIT LA TAILLE DU REGISTRE ! Chelou rec len == sizeof de la structure de ce que je lis sur le programme C :(
-	sub rdx, linux_dirent64_size
+	add rsi, [cur_offset] ; Need to opti ce doublon
 	syscall
+
+	lea rax, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_reclen]
+	add rax, [cur_offset]
+	xor rdi, rdi
+	mov di, [rax]
+	add [cur_offset], rdi
+
+	mov rax, [cur_offset]
+	cmp rax, [read_bytes]
+	je end_print_loop
+
+	jmp begin_print_loop
+
+end_print_loop:
+	
 ; TODO Continue here
 ; TODO Check return error
 
