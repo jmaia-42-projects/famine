@@ -25,97 +25,111 @@ _start:
 	%stacksize flat64
 	%assign %$localsize 0
 
-	%local fd:qword
-	%local cur_offset:qword		; Need to be optimized in a register I think
-	%local read_bytes:qword
+	%local fd:qword					; long fd;
+	%local cur_offset:qword				; long cur_offset;
+	%local read_bytes:qword				; long read_bytes;
+	%local cur_dirent:qword				; void *cur_dirent;
+	%xdefine buf rbp - %$localsize - BUFFER_SIZE	; uint8_t buf[BUFFER_SIZE];
+	%assign %$localsize %$localsize + BUFFER_SIZE	; ...
 
+	; Initializes stack frame
 	push rbp
 	mov rbp, rsp
-	sub rsp, %$localsize + BUFFER_SIZE
+	sub rsp, %$localsize
 
 	; Open folder_name
-	mov rax, SYS_OPEN
-	mov rdi, folder_name
-	mov rsi, O_RDONLY
-	xor rdx, rdx
-	syscall
-	cmp rax, 0
-	jl err
-	mov [fd], rax		; Save fd to stack
+	mov rax, SYS_OPEN				; _ret = open(
+	mov rdi, folder_name				; folder_name,
+	mov rsi, O_RDONLY				; O_RDONLY,
+	xor rdx, rdx					; 0
+	syscall						; );
+	cmp rax, 0					; if (_ret < 0)
+	jl .err						;	 goto .err
+	mov [fd], rax					; fd = _ret;
 
-	mov rax, SYS_GETDENTS64
-	mov rdi, [fd]
-	lea rsi, [rbp - %$localsize - BUFFER_SIZE]
-	mov rdx, BUFFER_SIZE
-	syscall
+.begin_getdents_loop:					; while (true) {
+	mov rax, SYS_GETDENTS64				; _ret = SYS_GETDENTS64(
+	mov rdi, [fd]					; 	fd,
+	lea rsi, [buf]					; 	buf,
+	mov rdx, BUFFER_SIZE				; 	BUFFER_SIZE
+	syscall						; );
 
-	mov [read_bytes], rax
+	cmp rax, 0					; if (_ret <= 0)
+	jle .end_getdents_loop				;	 break;
+	mov [read_bytes], rax				; read_bytes = _ret;
 
-	xor rax, rax
-	mov [cur_offset], rax
-; TEMP TO REMOVE
+	xor rax, rax					; cur_offset = 0;
+	mov [cur_offset], rax				; ...
 
-begin_print_loop:
+; TEMP TO REMOVE AND REPLACE WITH THE REAL CODE
+.begin_treate_loop:					; do {
+	lea rax, [buf]					; cur_dirent = buf + cur_offset;
+	add rax, [cur_offset]				; ...
+	mov [cur_dirent], rax				; ...
 	; ft_strlen
-	lea rdi, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_name]
-	add rdi, [cur_offset]
-	xor rdx, rdx
-	.begin:
-		mov sil, [rdi]	; Copy current character to sil (rsi)
-		cmp sil, 0		; If end of string is reached
-		je .end			; Go to the end
-		inc rdx			; Else, increment return value
-		inc rdi			; and go to next character
-		jmp .begin		; Treat next character
-	.end:
+	mov rdi, [cur_dirent]				; char *_str = cur_dirent->d_name;
+	add rdi, linux_dirent64.d_name			; ...
+	xor rdx, rdx					; _len = 0;
+	.begin_strlen_loop:				; while (true) {
+		mov sil, [rdi]				; _c = *_str;
+		cmp sil, 0				; if (_c == 0)
+		je .end_strlen_loop			; 	break;
+		inc rdx					; _len++
+		inc rdi					; _str++;
+		jmp .begin_strlen_loop			; }
+	.end_strlen_loop:				; ...
 
-	mov rax, 1
-	mov rdi, 1
-	lea rsi, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_name]
-	add rsi, [cur_offset] ; Need to opti ce doublon
-	syscall
+	mov rax, 1					; write(
+	mov rdi, 1					; 	1,
+	mov rsi, [cur_dirent]				;	cur_dirent->d_name,
+	add rsi, linux_dirent64.d_name			;	...
+	syscall						;	_len);
 
-	lea rax, [rbp - %$localsize - BUFFER_SIZE + linux_dirent64.d_reclen]
-	add rax, [cur_offset]
-	xor rdi, rdi
-	mov di, [rax]
-	add [cur_offset], rdi
+	mov rax, 1					; write(
+	mov rdi, 1					; 	1, 
+	push 0x0A					;	'\n',
+	mov rsi, rsp					;	...
+	mov rdx, 1					;	1
+	syscall						;);
 
-	mov rax, [cur_offset]
-	cmp rax, [read_bytes]
-	je end_print_loop
+	mov rax, [cur_dirent]				; _reclen_ptr = cur_dirent->d_reclen;
+	add rax, linux_dirent64.d_reclen		; ...
+	xor rdi, rdi					; _reclen = *_reclen_ptr;
+	mov di, [rax]					; ...
+	add [cur_offset], rdi				; cur_offset += _reclen;
 
-	jmp begin_print_loop
+	mov rax, [cur_offset]				; } while (cur_offset == read_bytes);
+	cmp rax, [read_bytes]				; ...
+	je .end_treate_loop				; ...
+	jmp .begin_treate_loop				; ...
+.end_treate_loop:					; ...
 
-end_print_loop:
+	jmp .begin_getdents_loop
+.end_getdents_loop:					; }
 	
-; TODO Continue here
-; TODO Check return error
-
 	; Close folder
-	mov rax, SYS_CLOSE
-	mov rdi, [fd]
-	syscall
-	cmp rax, -1
-	je err
+	mov rax, SYS_CLOSE				; _ret = close(
+	mov rdi, [fd]					;	fd
+	syscall						; );
+	cmp rax, -1					; if (_ret == -1)
+	je .err						; 	goto .err
+	jmp .end					; else goto end
 
-	jmp end
+.err:
+	mov rax, SYS_WRITE				; write(
+	mov rdi, 1					; 	1,
+	mov rsi, err_msg				; 	err_msg,
+	mov rdx, len_err_msg				; 	len_err_msg,
+	syscall						; );
+	jmp .end					; goto .end
 
-err:
-	mov rax, SYS_WRITE
-	mov rdi, 1
-	mov rsi, err_msg
-	mov rdx, len_err_msg
-	syscall
-	jmp end
-
-end:
+.end:
 	%pop
-	mov rax, SYS_EXIT
-	mov rdi, 0
-	syscall
+	mov rax, SYS_EXIT				; exit(
+	mov rdi, 0					; 0
+	syscall						; );
 
 section .data
-	folder_name: db "/tmp/pouet", 0
+	folder_name: db "/usr/bin/", 0
 	err_msg: db "Error occured !", 10
 	len_err_msg: equ $ - err_msg
