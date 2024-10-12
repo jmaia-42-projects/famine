@@ -118,7 +118,7 @@ treate_folder:
 	call print_string				; print_string(_str);
 	; end debug
 
-	; detect regular file
+	; TODO: detect is regular file
 	mov rdi, [folder]				; treat_file(folder;
 	mov rsi, [cur_dirent]				; 	cur_dirent
 	add rsi, linux_dirent64.d_name			; 		->d_name
