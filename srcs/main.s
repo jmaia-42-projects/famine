@@ -20,8 +20,8 @@
 
 %define BUFFER_SIZE 1024
 %define PATH_MAX 4096
-; arbitrary TODO: change this
-%define MINIMAL_FILE_SIZE 100
+; 64 bytes header + 56 bytes for one program header + 1000 bytes for a load segment
+%define MINIMAL_FILE_SIZE 64 + 56 + 1000
 
 global _start
 
@@ -181,7 +181,6 @@ treate_folder:
 	call print_string				; print_string(_str);
 	; end debug
 
-	; TODO: detect is regular file
 	mov rdi, [folder]				; treat_file(folder;
 	mov rsi, [cur_dirent]				; 	cur_dirent
 	add rsi, linux_dirent64.d_name			; 		->d_name
@@ -255,16 +254,22 @@ treat_file:
 	mov [dirname], rdi				; dirname = _dirname;
 	mov [filename], rsi				; filename = _filename;
 
-	; concat complete file path (TODO: check PATH_MAX overflow)
+	xor r8, r8					; len = 0;
 	lea rdi, [pathbuf]				; dest = pathbuf;
 	mov rsi, [dirname]				; src = dirname;
 	.dirname: ; TODO : Do something with repnz instead of these 3 lines?
+		add r8, 1				; len++;
+		cmp r8, PATH_MAX			; if (len == PATH_MAX)
+		je .err					; 	goto .err;
 		movsb					; *dest++ = *src++;
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .dirname				; 	goto .dirname;
 
 	mov rsi, [filename]				; src = filename;
 	.filename:
+		add r8, 1				; len++;
+		cmp r8, PATH_MAX			; if (len == PATH_MAX)
+		je .err					; 	goto .err;
 		movsb					; *dest++ = *src++;
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .filename				; 	goto .filename;
