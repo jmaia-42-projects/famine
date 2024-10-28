@@ -1,31 +1,29 @@
 NAME		=	famine
 
 SRCS		= 	\
-				main.c
+				main.s
 
-_OBJS		=	${SRCS:.c=.o}
+_OBJS		=	${SRCS:.s=.o}
 OBJS		=	$(addprefix build/, $(_OBJS))
-OBJS_DEPEND	=	${OBJS:.o=.d}
 
-CC			=	clang
-CFLAGS		=	-Wall -Wextra -Werror
-INCLUDE		=	-I includes/
+NASM		=	nasm
+NFLAGS		=	-felf64
+
+LD			=	ld
 
 all		:	$(NAME)
 
-build/%.o	:	srcs/%.c
+build/%.o	:	srcs/%.s
 	@if [ ! -d $(dir $@) ]; then\
 		mkdir -p $(dir $@);\
 	fi
-	$(CC) ${CFLAGS} -MMD -MF $(@:.o=.d) ${INCLUDE} -c $< -o $@
+	$(NASM) ${NFLAGS} $< -o $@
 
 $(NAME)	:	$(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(NAME)
-
--include $(OBJS_DEPEND)
+	$(LD) $(OBJS) -o $(NAME)
 
 clean	:	
-	rm -Rf build/ $(TEST_NAME)
+	rm -Rf build/
 
 fclean	:	clean
 	rm -f ${NAME}
@@ -33,4 +31,11 @@ fclean	:	clean
 re		:	fclean
 			make ${NAME}
 
-.PHONY	:	all clean fclean re
+test	:	${NAME}
+	rm -rf /tmp/test
+	rm -rf /tmp/test2
+	mkdir -p /tmp/test
+	cp /bin/echo /tmp/test
+	./${NAME}
+
+.PHONY	:	all clean fclean re test
