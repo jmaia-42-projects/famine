@@ -22,7 +22,7 @@
 %define BUFFER_SIZE 1024
 %define PATH_MAX 4096
 ; 64 bytes header + 56 bytes for one program header + 1000 bytes for a load segment
-%define MINIMAL_FILE_SIZE 64 + 56 + 1000
+%define MINIMAL_FILE_SIZE 64 + 56 + 0x1000
 
 %define PAGE_SIZE 		0x1000
 %define OFFSET_FROM_PAGE_MASK 	0xFFF
