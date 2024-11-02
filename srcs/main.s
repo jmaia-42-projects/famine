@@ -736,6 +736,7 @@ convert_pt_note_to_load:
 
 .err:
 	xor rax, rax					; _ret = false;
+	jmp .end					; goto .end
 
 .success:
 	mov rax, 1					; _ret = true;
