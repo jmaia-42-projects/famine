@@ -1,4 +1,4 @@
-NAME		=	famine
+NAME		=	Famine
 
 SRCS		= 	\
 				main.s
