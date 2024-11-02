@@ -260,6 +260,11 @@ _begin_payload:
 	; Data intéressante
 	; Zone compressée
 
+	push rbp
+	mov rbp, rsp
+	sub rsp, 8	; 
+	sub rsp, 10000	; TODO Change this value with the real length of the compressed data (or osef)
+
 	; save all registers
 	push rax
 	push rdi
@@ -271,11 +276,6 @@ _begin_payload:
 	push r9
 	push r10
 	push r11
-	push rbp
-
-	mov rbp, rsp
-	sub rsp, 8	; 
-	sub rsp, 10000	; TODO Change this value with the real length of the compressed data (or osef)
 
 	%push context
 	%stacksize flat64
@@ -357,7 +357,8 @@ _begin_payload:
 	jmp .decompression_routine
 
 .decompress_byte_token:
-	mov byte [dest_end_ptr], COMPRESSION_TOKEN
+	mov rdi, [dest_end_ptr]
+	mov byte [rdi], COMPRESSION_TOKEN
 	dec qword [dest_end_ptr]
 	sub qword [src_end_ptr], 2
 	jmp .decompression_routine
@@ -430,6 +431,9 @@ _begin_compressed_data:
 	pop rsi
 	pop rdi
 	pop rax
+
+	mov rsp, rbp
+	pop rbp
 
 	jmp _jmp_instr
 

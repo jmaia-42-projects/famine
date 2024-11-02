@@ -1,0 +1,1 @@
+gcc empty_prog_no_libc.c -nostartfiles -static -nolibc -masm=intel -o empty_program_no_libc
